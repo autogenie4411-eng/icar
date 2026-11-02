@@ -7436,7 +7436,7 @@ const vehicleCatalog = [
   // false: 트림 버튼 클릭 시 설명 팝업 없이 즉시 선택 (기본: 보류)
   // true : 트림 설명 팝업을 열고 [이 트림 선택하기]를 눌러 선택
   // 사용 설정만 바꾸면 됩니다. 할인율 배지·차단 경고·견적 신청 기능은 그대로 유지됩니다.
-  const ENABLE_TRIM_DETAIL = false;
+  const ENABLE_TRIM_DETAIL = true;
 
   // STEP 02: 상세 팝업을 사용할 때만 확인 후 subTrim에 반영합니다.
   const trimDetailModal = document.getElementById("trimDetailModal");
