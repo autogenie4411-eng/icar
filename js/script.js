@@ -7405,6 +7405,14 @@ const vehicleCatalog = [
   }
 
   window.addEventListener("popstate", event => {
+    // 모바일 트림 팝업에서 [뒤로]를 누른 경우, 견적 단계 자체는 변경하지 않습니다.
+    if (trimDetailHistoryActive) {
+      trimDetailHistoryActive = false;
+      trimDetailHistoryExitPending = false;
+      if (trimDetailModal?.open) trimDetailModal.close();
+      rememberWizardState();
+      return;
+    }
     const entry = event.state;
     if (!entry?.[wizardHistoryKey] || !entry.snapshot) return;
     Object.assign(state, entry.snapshot);
@@ -7423,6 +7431,715 @@ const vehicleCatalog = [
   const form = document.getElementById("estimateForm");
   const reviewSection = document.getElementById("reviewSection");
   const reviewParking = document.getElementById("reviewParking");
+
+  // [트림 상세 팝업 사용 여부]
+  // false: 트림 버튼 클릭 시 설명 팝업 없이 즉시 선택 (기본: 보류)
+  // true : 트림 설명 팝업을 열고 [이 트림 선택하기]를 눌러 선택
+  // 사용 설정만 바꾸면 됩니다. 할인율 배지·차단 경고·견적 신청 기능은 그대로 유지됩니다.
+  const ENABLE_TRIM_DETAIL = false;
+
+  // STEP 02: 상세 팝업을 사용할 때만 확인 후 subTrim에 반영합니다.
+  const trimDetailModal = document.getElementById("trimDetailModal");
+  const confirmTrimSelectionButton = document.getElementById("confirmTrimSelection");
+  let pendingSubTrim = "";
+  // 포르쉐·벤틀리·롤스로이스는 세부 트림 버튼이 없으므로 세부모델 자체를 팝업에서 확인합니다.
+  // 팝업을 취소해도 기존 선택값을 유지하도록 임시 선택값으로 보관합니다.
+  let pendingDirectModel = "";
+  function usesDirectModelTrimDetail() {
+    return ["포르쉐", "벤틀리", "롤스로이스"].includes(normalizeTrimKey(state.brandName));
+  }
+  // 모바일 전체 화면을 닫을 때 임시 히스토리가 이전의 트림 선택값을 덮어쓰지 않도록 관리합니다.
+  const TRIM_DETAIL_HISTORY_KEY = "autogenieTrimDetailScreen";
+  let trimDetailHistoryActive = false;
+  let trimDetailHistoryExitPending = false;
+
+  // 데스크탑 트림 팝업이 열린 동안에는 배경 페이지의 휠 스크롤을 막습니다.
+  // overflow 잠금만 사용하므로 현재 페이지 스크롤 위치가 그대로 유지됩니다.
+  function setTrimBackgroundScrollLock(locked) {
+    document.documentElement.classList.toggle("trim-detail-scroll-locked", locked);
+    document.body.classList.toggle("trim-detail-scroll-locked", locked);
+  }
+
+  // [필수] 포르쉐·벤틀리·롤스로이스 설명 데이터는 script.js에도 포함합니다.
+  // 배포 중 데이터 JS가 누락되거나 이전 캐시가 남아도 팝업 내용을 정상 출력합니다.
+  // 그 외 76개 차종의 참고 기능은 trim-reference-data.js에서 읽습니다.
+  const LUXURY_MODEL_DETAIL_FALLBACK = {
+  "포르쉐|마칸|마칸 GTS 일렉트릭": {
+    "featureTitle": "마칸 GTS 퍼포먼스 콕핏",
+    "featureCaption": "포르쉐 공식 뉴스룸의 마칸 GTS 실내 이미지입니다. 인테리어 패키지 및 디스플레이 구성은 선택 사양에 따라 달라질 수 있습니다.",
+    "summary": "마칸 GTS 일렉트릭은 전용 스포츠 에어 서스펜션과 민첩한 핸들링을 강조한 고성능 순수 전기 SUV입니다. 포르쉐코리아의 국내 안내 수치를 반영했습니다.",
+    "highlights": [
+      "런치 컨트롤 오버부스트 최고 571 PS (포르쉐코리아 표기)",
+      "정지 상태 100km/h 도달 3.8초 (런치 컨트롤)",
+      "스포츠 에어 서스펜션·PASM·10mm 낮아진 차체",
+      "포르쉐 토크 벡터링 플러스(PTV Plus)",
+      "GTS 인테리어 패키지 및 리어 액슬 스티어링은 선택 사양"
+    ],
+    "sourceUrl": "https://www.porsche.com/korea/ko/models/macan/macan-electric-models/macan-gts-electric/",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/마칸/마칸 GTS 퍼포먼스 콕핏.webp"
+  },
+  "포르쉐|카이엔|카이엔": {
+    "featureTitle": "포르쉐 드라이버 익스피리언스",
+    "featureCaption": "포르쉐 공식 뉴스룸의 카이엔 디지털 계기판 및 드라이버 익스피리언스 이미지입니다. 국내 연식별 사양 차이가 있을 수 있습니다.",
+    "summary": "국내 안내 기준 2027 카이엔 가솔린 모델입니다. 디지털 운전자 중심 콕핏과 SUV 공간 활용성을 갖추고 있습니다.",
+    "highlights": [
+      "가솔린 사륜구동(AWD)",
+      "국내 공식 최고출력 360 PS",
+      "정지 상태 100km/h 도달 6.0초",
+      "최고속도 248km/h(공식 표기)",
+      "첨단 디스플레이 및 개별 선택 옵션은 국내 차량 구성별 확인"
+    ],
+    "sourceUrl": "https://www.porsche.com/korea/ko/models/cayenne/cayenne-models/cayenne/",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/카이엔/포르쉐 드라이버 익스피리언스.webp"
+  },
+  "포르쉐|카이엔 EV|카이엔 일렉트릭": {
+    "featureTitle": "카이엔 일렉트릭 플로우 디스플레이",
+    "featureCaption": "포르쉐 공식 카이엔 일렉트릭 플로우 디스플레이의 기능 이미지입니다. 선택 사양과 국내 판매 구성은 별도 확인이 필요합니다.",
+    "summary": "카이엔 일렉트릭은 포르쉐코리아에서 안내하는 순수 전기 사륜구동 SUV로, 퍼포먼스와 일상적 실용성을 결합한 기본 전기 SUV이 특징입니다.",
+    "highlights": [
+      "국내 공식 오버부스트 최고 442 PS (런치 컨트롤)",
+      "정지 상태 100km/h 도달 4.8초 (런치 컨트롤)",
+      "순수 전기 AWD·충전 편의 기능",
+      "포르쉐 플로우 디스플레이 기반 디지털 콕핏",
+      "무선 충전·인터랙티브 무드 조명 등은 선택 사양/출시 시점 별도 확인"
+    ],
+    "sourceUrl": "https://www.porsche.com/korea/ko/models/cayenne/configure/",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/카이엔 EV/플로우 디스플레이.webp"
+  },
+  "포르쉐|카이엔 EV|카이엔 S 일렉트릭": {
+    "featureTitle": "카이엔 일렉트릭 플로우 디스플레이",
+    "featureCaption": "포르쉐 공식 카이엔 일렉트릭 플로우 디스플레이의 기능 이미지입니다. 선택 사양과 국내 판매 구성은 별도 확인이 필요합니다.",
+    "summary": "카이엔 S 일렉트릭은 포르쉐코리아에서 안내하는 순수 전기 사륜구동 SUV로, 기본 모델보다 높은 출력과 민첩한 가속 성능이 특징입니다.",
+    "highlights": [
+      "국내 공식 오버부스트 최고 666 PS (런치 컨트롤)",
+      "정지 상태 100km/h 도달 3.8초 (런치 컨트롤)",
+      "순수 전기 AWD·충전 편의 기능",
+      "포르쉐 플로우 디스플레이 기반 디지털 콕핏",
+      "무선 충전·인터랙티브 무드 조명 등은 선택 사양/출시 시점 별도 확인"
+    ],
+    "sourceUrl": "https://www.porsche.com/korea/ko/models/cayenne/configure/",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/카이엔 EV/플로우 디스플레이.webp"
+  },
+  "포르쉐|카이엔 EV|카이엔 터보 일렉트릭": {
+    "featureTitle": "카이엔 일렉트릭 플로우 디스플레이",
+    "featureCaption": "포르쉐 공식 카이엔 일렉트릭 플로우 디스플레이의 기능 이미지입니다. 선택 사양과 국내 판매 구성은 별도 확인이 필요합니다.",
+    "summary": "카이엔 터보 일렉트릭은 포르쉐코리아에서 안내하는 순수 전기 사륜구동 SUV로, 고성능 전기 SUV 라인업의 터보 모델이 특징입니다.",
+    "highlights": [
+      "국내 공식 오버부스트 최고 1,156 PS (런치 컨트롤)",
+      "정지 상태 100km/h 도달 2.5초 (런치 컨트롤)",
+      "순수 전기 AWD·충전 편의 기능",
+      "포르쉐 플로우 디스플레이 기반 디지털 콕핏",
+      "무선 충전·인터랙티브 무드 조명 등은 선택 사양/출시 시점 별도 확인"
+    ],
+    "sourceUrl": "https://www.porsche.com/korea/ko/models/cayenne/configure/",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/카이엔 EV/플로우 디스플레이.webp"
+  },
+  "포르쉐|타이칸|타이칸": {
+    "featureTitle": "타이칸 디지털 운전자 콕핏",
+    "featureCaption": "포르쉐 공식 이미지입니다. 동일 시리즈의 안내용 이미지이며 연식·선택 사양에 따라 다를 수 있습니다.",
+    "summary": "타이칸은 포르쉐코리아 국내 모델 라인업에 등록된 전기 스포츠 세단입니다. 기본형 Taycan의 전기 주행과 포르쉐 커브드 디스플레이을(를) 중심으로 안내합니다.",
+    "highlights": [
+      "후륜구동 순수 전기 세단",
+      "디지털 커브드 디스플레이 및 포르쉐 PCM",
+      "고성능 800V 전기 시스템·급속 충전",
+      "배터리·휠·시트 및 장비는 실제 선택 모델별 확인"
+    ],
+    "sourceUrl": "https://models.porsche.com/ko-KR/model-start/taycan",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/타이칸/타이칸 디지털 운전자 콕핏.webp"
+  },
+  "포르쉐|타이칸|타이칸 4": {
+    "featureTitle": "타이칸 디지털 운전자 콕핏",
+    "featureCaption": "포르쉐 공식 이미지입니다. 동일 시리즈의 안내용 이미지이며 연식·선택 사양에 따라 다를 수 있습니다.",
+    "summary": "타이칸 4은 포르쉐코리아 국내 모델 라인업에 등록된 전기 스포츠 세단입니다. Taycan 4의 AWD 전기 구동을(를) 중심으로 안내합니다.",
+    "highlights": [
+      "사륜구동 순수 전기 세단",
+      "디지털 커브드 디스플레이 및 포르쉐 PCM",
+      "고성능 800V 전기 시스템·급속 충전",
+      "배터리·휠·시트 및 장비는 실제 선택 모델별 확인"
+    ],
+    "sourceUrl": "https://models.porsche.com/ko-KR/model-start/taycan",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/타이칸/타이칸 디지털 운전자 콕핏.webp"
+  },
+  "포르쉐|타이칸|타이칸 4S": {
+    "featureTitle": "타이칸 디지털 운전자 콕핏",
+    "featureCaption": "포르쉐 공식 이미지입니다. 동일 시리즈의 안내용 이미지이며 연식·선택 사양에 따라 다를 수 있습니다.",
+    "summary": "타이칸 4S은 포르쉐코리아 국내 모델 라인업에 등록된 전기 스포츠 세단입니다. Taycan 4S의 추가 주행 성능을(를) 중심으로 안내합니다.",
+    "highlights": [
+      "사륜구동 고성능 전기 세단",
+      "디지털 커브드 디스플레이 및 포르쉐 PCM",
+      "고성능 800V 전기 시스템·급속 충전",
+      "배터리·휠·시트 및 장비는 실제 선택 모델별 확인"
+    ],
+    "sourceUrl": "https://models.porsche.com/ko-KR/model-start/taycan",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/타이칸/타이칸 디지털 운전자 콕핏.webp"
+  },
+  "포르쉐|타이칸|타이칸 터보": {
+    "featureTitle": "타이칸 디지털 운전자 콕핏",
+    "featureCaption": "포르쉐 공식 이미지입니다. 동일 시리즈의 안내용 이미지이며 연식·선택 사양에 따라 다를 수 있습니다.",
+    "summary": "타이칸 터보은 포르쉐코리아 국내 모델 라인업에 등록된 전기 스포츠 세단입니다. 오버부스트 최고 884 PS · 0–100km/h 2.7초을(를) 중심으로 안내합니다.",
+    "highlights": [
+      "포르쉐코리아 공식 표기: 오버부스트 최고 884 PS · 0–100km/h 2.7초",
+      "디지털 커브드 디스플레이 및 포르쉐 PCM",
+      "고성능 800V 전기 시스템·급속 충전",
+      "배터리·휠·시트 및 장비는 실제 선택 모델별 확인"
+    ],
+    "sourceUrl": "https://models.porsche.com/ko-KR/model-start/taycan",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/타이칸/타이칸 디지털 운전자 콕핏.webp"
+  },
+  "포르쉐|타이칸|타이칸 터보 S": {
+    "featureTitle": "타이칸 디지털 운전자 콕핏",
+    "featureCaption": "포르쉐 공식 이미지입니다. 동일 시리즈의 안내용 이미지이며 연식·선택 사양에 따라 다를 수 있습니다.",
+    "summary": "타이칸 터보 S은 포르쉐코리아 국내 모델 라인업에 등록된 전기 스포츠 세단입니다. 오버부스트 최고 952 PS · 0–100km/h 2.4초을(를) 중심으로 안내합니다.",
+    "highlights": [
+      "포르쉐코리아 공식 표기: 오버부스트 최고 952 PS · 0–100km/h 2.4초",
+      "디지털 커브드 디스플레이 및 포르쉐 PCM",
+      "고성능 800V 전기 시스템·급속 충전",
+      "배터리·휠·시트 및 장비는 실제 선택 모델별 확인"
+    ],
+    "sourceUrl": "https://models.porsche.com/ko-KR/model-start/taycan",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/타이칸/타이칸 디지털 운전자 콕핏.webp"
+  },
+  "포르쉐|타이칸|타이칸 터보 GT": {
+    "featureTitle": "타이칸 디지털 운전자 콕핏",
+    "featureCaption": "포르쉐 공식 이미지입니다. 동일 시리즈의 안내용 이미지이며 연식·선택 사양에 따라 다를 수 있습니다.",
+    "summary": "타이칸 터보 GT은 포르쉐코리아 국내 모델 라인업에 등록된 전기 스포츠 세단입니다. 오버부스트 최고 1,034 PS · 0–100km/h 2.3초을(를) 중심으로 안내합니다.",
+    "highlights": [
+      "포르쉐코리아 공식 표기: 오버부스트 최고 1,034 PS · 0–100km/h 2.3초",
+      "디지털 커브드 디스플레이 및 포르쉐 PCM",
+      "고성능 800V 전기 시스템·급속 충전",
+      "배터리·휠·시트 및 장비는 실제 선택 모델별 확인"
+    ],
+    "sourceUrl": "https://models.porsche.com/ko-KR/model-start/taycan",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/타이칸/타이칸 디지털 운전자 콕핏.webp"
+  },
+  "포르쉐|파나메라|파나메라 4": {
+    "featureTitle": "파나메라 4 디지털 콕핏",
+    "featureCaption": "포르쉐 공식 파나메라 4 실내 대표 사진입니다.",
+    "summary": "파나메라 4는 럭셔리 스포츠 세단의 정숙성과 주행 성능을 결합한 국내 판매 모델입니다.",
+    "highlights": [
+      "2027 포르쉐코리아 기준 가솔린 사륜구동",
+      "국내 공식 최고출력 360 PS",
+      "정지 상태 100km/h 도달 5.0초",
+      "최고속도 270km/h",
+      "액티브 라이드 등 고급 주행 옵션은 사양별 별도 확인"
+    ],
+    "sourceUrl": "https://www.porsche.com/korea/ko/models/panamera/panamera-models/panamera-4/",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/파나메라/파나메라 4 디지털 콕핏.webp"
+  },
+  "벤틀리|벤테이가|4.0 V8": {
+    "featureTitle": "벤테이가 스피드 드라이버 콕핏",
+    "featureCaption": "벤틀리 공식 벤테이가 스피드 실내 이미지입니다. 선택 사양은 계약 시 확인해야 합니다.",
+    "summary": "현재 사이트의 4.0 V8 / SPEED 표기를 유지하면서 벤틀리 한국 공식 모델 안내의 벤테이가 스피드 특징을 정리했습니다. 일반 V8(550 PS)과 스피드(650 PS)의 수치는 구분됩니다.",
+    "highlights": [
+      "벤테이가 스피드: 4.0L V8 트윈터보 · 650 PS · 850 Nm",
+      "벤테이가 일반 V8: 550 PS · 770 Nm (스피드와 구분)",
+      "V8의 벤틀리 다이내믹 라이드와 4륜 스티어링",
+      "3D 서라운드 뷰·주차 보조 및 투어링 스펙은 국내 적용 확인",
+      "스피드 전용 인테리어 마감·휠은 실제 차량 구성별 확인"
+    ],
+    "sourceUrl": "https://www.bentleymotors.com/kr/ko/models/bentayga.html",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": true,
+    "featureImage": "images/trim-features/벤틀리/벤테이가/벤테이가 스피드 드라이버 콕핏.webp"
+  },
+  "벤틀리|컨티넨탈 GT|4.0 PHEV": {
+    "featureTitle": "컨티넨탈 GT 실내 마감과 디스플레이",
+    "featureCaption": "벤틀리 공식 컨티넨탈 GT 아주르 실내 이미지입니다. 실제 선택 등급과 다를 수 있습니다.",
+    "summary": "4세대 컨티넨탈 GT는 V8 플러그인 하이브리드 기반의 럭셔리 그랜드 투어러입니다. 홈페이지의 Core/Speed/Mulliner/Azure 등급은 국내 딜러의 실제 판매 구성을 확인해야 합니다.",
+    "highlights": [
+      "4.0L V8 플러그인 하이브리드(PHEV) 계열",
+      "스피드: 울트라 퍼포먼스 하이브리드 최고 782 PS / 1,000 Nm (스피드 기준)",
+      "애플 카플레이·안드로이드 오토·커넥티드 인포테인먼트",
+      "도심 주행 보조용 시티 스펙(시장별 기능 상이)",
+      "벤틀리 로테이팅 디스플레이·투어링 스펙은 등급/옵션별 확인"
+    ],
+    "sourceUrl": "https://www.bentleymotors.com/kr/ko/models/continental-gt.html",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": true,
+    "featureImage": "images/trim-features/벤틀리/컨티넨탈 GT/컨티넨탈 GT 실내 마감과 디스플레이.webp"
+  },
+  "벤틀리|플라잉스퍼|4.0 V8": {
+    "featureTitle": "플라잉스퍼 뒷좌석 터치스크린 리모트",
+    "featureCaption": "벤틀리 공식 플라잉스퍼 아주르의 뒷좌석 터치스크린 리모트 이미지입니다. 4.0 V8 국내 주문 차량의 세부 적용 사양은 별도 확인이 필요합니다.",
+    "summary": "현행 플라잉스퍼는 V8 하이브리드 파워트레인을 사용하는 4도어 럭셔리 세단입니다. 웹사이트에 남아 있는 4.0 V8 표기는 현행 국내 구동 방식과 정확히 대조해야 합니다.",
+    "highlights": [
+      "4.0L V8 기반 하이브리드 파워트레인",
+      "리어 터치스크린 리모트(TSR): 공조·오디오·좌석 기능 제어",
+      "PM2.5 필터 기반 업그레이드 공조 시스템",
+      "무선 Apple CarPlay 및 Android Auto 지원(서비스·시장별 확인)",
+      "웰니스 시트·로테이팅 디스플레이 등은 옵션/등급별 확인"
+    ],
+    "sourceUrl": "https://www.bentleymotors.com/kr/ko/models/flying-spur.html",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": true,
+    "featureImage": "images/trim-features/벤틀리/플라잉스퍼/뒷좌석 터치스크린 리모트.webp"
+  },
+  "롤스로이스|스펙터|스펙터": {
+    "featureTitle": "스펙터 일루미네이티드 페시아",
+    "featureCaption": "롤스로이스 공식 이미지로 확인되는 스펙터 일루미네이티드 페시아(비스포크 구성 예시)입니다.",
+    "summary": "스펙터는 롤스로이스 최초의 순수 전기 슈퍼 쿠페로, 정숙한 주행과 맞춤 제작 실내를 제공하는 모델입니다. 현재 한국에서 블랙 배지 스펙터도 공식 출시된 상태입니다.",
+    "highlights": [
+      "순수 전기 럭셔리 쿠페",
+      "스타라이트 도어·일루미네이티드 페시아 등 비스포크 선택 가능",
+      "롤스로이스 플래너(실내 조명·콕핏 통합 시스템) 및 고급 마감",
+      "블랙 배지 스펙터(국내 출시): 659 PS · 0–100km/h 4.3초 (일반형과 구분)",
+      "2026 신형 스펙터 시리즈 II 사양은 국내 실제 판매 시점·트림별 확인"
+    ],
+    "sourceUrl": "https://www.rolls-roycemotorcars.com/ko_KR/showroom/spectre-in-detail.html",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": true,
+    "featureImage": "images/trim-features/롤스로이스/스펙터/스펙터 일루미네이티드 페시아.webp"
+  },
+  "롤스로이스|팬텀|6.75 V12": {
+    "featureTitle": "팬텀 비스포크 대시보드와 더 갤러리",
+    "featureCaption": "롤스로이스 공식 프레스 이미지(비스포크 차량 예시)입니다. 세부 마감은 계약별로 다릅니다.",
+    "summary": "팬텀 시리즈 II는 장인정신과 뒷좌석 승차감, 완성도 높은 비스포크 실내가 특징인 플래그십 세단입니다. 국내 판매 구성에 따라 부품과 옵션은 다르게 적용됩니다.",
+    "highlights": [
+      "6.75L V12 기반 팬텀 시리즈 II (연식별 세부 제원 확인)",
+      "대시보드 전체를 가로지르는 비스포크 더 갤러리(The Gallery)",
+      "고요한 실내 공간과 롤스로이스 매직 카펫 라이드",
+      "스타라이트 헤드라이너·비스포크 가죽·목재 마감 선택 가능",
+      "22인치 폴리시드 디스크 휠 등 외장 사양은 구성별 확인"
+    ],
+    "sourceUrl": "https://www.rolls-roycemotorcars.com/ko_KR/showroom/phantom-in-detail.html",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": true,
+    "featureImage": "images/trim-features/롤스로이스/팬텀/팬텀 비스포크 대시보드와 더 갤러리.webp"
+  }
+};
+  const normalizeTrimKey = value => String(value || "").normalize("NFC").trim().replace(/\s+/g, " ");
+  function resolveLuxuryModelDetail(brand, car, model) {
+    const key = [brand, car, model].map(normalizeTrimKey).join("|");
+    return LUXURY_MODEL_DETAIL_FALLBACK[key] || null;
+  }
+
+  // 수입차 트림별 설명은 js/trim-reference-data.js에서 일괄 관리합니다.
+  // 팝업 공통 로직은 이 파일에서 처리합니다.
+  // 조건이 명백하게 '다른 트림 전용'인 경우만 화면에서 제외합니다.
+  // 나머지 항목은 모두 참고 자료로 노출하며 실제 적용 조건을 함께 표시합니다.
+  function isTrimReferenceFeatureRelevant(feature, brand, car, model, trim) {
+    const cond = String(feature?.condition || "");
+    const name = String(trim || "");
+    if (!cond || !name) return true;
+    if (name === "Pro Lite" && /Pro 전용|Pro만|Pro 추가 사양|Pro에서만/.test(cond)) return false;
+    if (name === "Pro Lite" && /Pro Lite 제외/.test(cond)) return false;
+    if (name === "Pro" && /Pro Lite 전용|Pro 제외/.test(cond)) return false;
+    if (name === "Core" && /Core 제외|Ultra 적용|Ultra 전용|Ultra만/.test(cond)) return false;
+    if (name.includes("Plus") && /Ultra 적용|Ultra 전용|Ultra만/.test(cond)) return false;
+    if (/Advanced/i.test(name) && /Advanced 제외|S.line 적용|S.line 전용/.test(cond)) return false;
+    if (/A\/T/.test(name) && /M Sport 전용/.test(cond)) return false;
+    if (brand === "벤츠" && car === "AMG SL 로드스터" && model.includes("SL 43") &&
+        /SL 63 적용|SL 63 전용/.test(cond) && !/SL 43/.test(cond)) return false;
+    if (brand === "테슬라" && car === "모델3" && model.includes("standard") &&
+        /Premium|Performance/.test(cond) && !/공통|전체/.test(cond)) return false;
+    if (brand === "BMW" && car === "IX" && model.includes("xDrive45") &&
+        /xDrive60·M70|xDrive60 및 M70/.test(cond) && !/xDrive45·xDrive60/.test(cond)) return false;
+    return true;
+  }
+
+  function openTrimDetailModal(trimName, { directModel = false } = {}) {
+    if (!trimName || state.step !== 2) return;
+    // 일반 차량은 하위 트림, 포르쉐·벤틀리·롤스로이스는 세부모델을 팝업 대상으로 사용합니다.
+    const selectedModelName = directModel ? trimName : state.trim;
+    if (!selectedModelName || (directModel && !usesDirectModelTrimDetail())) return;
+    const modelGroup = currentVehicle()?.detailModels?.find(group => group.name === selectedModelName);
+    if (!modelGroup || (!directModel && !modelGroup.trims.includes(trimName))) {
+      console.warn("[오토지니] 차량 모델이 등록되지 않아 트림 팝업을 열지 못했습니다.", state.brandName, state.carName, selectedModelName, trimName);
+      return;
+    }
+
+    // OFF 시에는 기존 모델/트림 선택 동작 그대로 즉시 확정합니다.
+    if (!ENABLE_TRIM_DETAIL) {
+      if (directModel) {
+        state.trim = selectedModelName;
+        state.subTrim = "";
+        render();
+        showValidation("");
+        rememberWizardState();
+        scrollToNextSelection('[data-option-section="engine-model"]', "start");
+      } else {
+        pendingSubTrim = trimName;
+        commitTrimSelection();
+      }
+      return;
+    }
+
+    const descriptionKey = directModel
+      ? [state.brandName, state.carName, selectedModelName].join("|")
+      : [state.brandName, state.carName, selectedModelName, trimName].join("|");
+    // 차종 단위 공통 이미지 대신 반드시 차종 + 실제 선택한 트림을 기준으로 매핑합니다.
+    // 확인된 기본 사양이 아닐 때는 자료에 없는 업그레이드를 사실로 안내하지 않습니다.
+    const referenceKey = [state.brandName, state.carName, trimName].join("|");
+    const referenceGroupKey = [state.brandName, state.carName, selectedModelName, trimName].join("|");
+    // 업로드한 차종별 참고 자료를 선택한 트림에 맞춰 표시합니다.
+    // 기능별 원본의 적용 조건을 확인할 수 있을 때만 제외/표시를 판단합니다.
+    // 제조사 자료만으로 확정할 수 없는 기본사양/상위 업그레이드는 단정하지 않습니다.
+    const carFeatureGroup = window.AutoGenieTrimFeaturesByModel?.[[state.brandName, state.carName].join("|")];
+    const visibleCarFeatures = Array.isArray(carFeatureGroup?.features)
+      ? carFeatureGroup.features.filter(feature => isTrimReferenceFeatureRelevant(feature, state.brandName, state.carName, selectedModelName, trimName))
+      : [];
+    // 트림마다 대표 참고 이미지를 가능한 한 다르게 사용합니다.
+    // 아래 이미지는 해당 트림의 기본 적용 사양을 확정하는 근거가 아닙니다.
+    const selectedTrimIndex = directModel ? 0 : modelGroup.trims.indexOf(trimName);
+    const referenceHero = visibleCarFeatures.length
+      ? visibleCarFeatures[(selectedTrimIndex < 0 ? 0 : selectedTrimIndex) % visibleCarFeatures.length]
+      : null;
+    const carReferenceDetail = referenceHero ? {
+      referenceOnly: true,
+      summary: `${state.carName}의 기능을 살펴볼 수 있습니다. 제공된 자료는 차종 기준이며, ${directModel ? selectedModelName : `${selectedModelName} · ${trimName}`}의 실제 기본 사양 및 옵션 적용은 별도로 확인해야 합니다.`,
+      featureTitle: referenceHero.title,
+      featureImage: referenceHero.image,
+      featureCaption: referenceHero.description,
+      features: visibleCarFeatures,
+      highlights: [],
+    } : null;
+    const luxuryModelDetail = directModel
+      ? resolveLuxuryModelDetail(state.brandName, state.carName, selectedModelName)
+      : null;
+    // 최종 세부모델이 곧 트림인 세 브랜드는 script.js 내장 정보를 최우선 사용합니다.
+    // 타 브랜드는 별도 데이터 파일의 트림별 등록 정보를 종전대로 우선합니다.
+    const registeredDetail = luxuryModelDetail
+      || window.AutoGenieTrimReference?.[descriptionKey]
+      || window.AutoGenieTrimReference?.[referenceGroupKey]
+      || window.AutoGenieTrimReference?.[referenceKey]
+      || carReferenceDetail
+      || null;
+    const compareTitle = document.getElementById("trimDetailCompareTitle");
+    const comparisonSection = document.getElementById("trimDetailComparison");
+    const inheritedList = document.getElementById("trimDetailInheritedList");
+    const addedList = document.getElementById("trimDetailAddedList");
+    const comparisonFoot = document.getElementById("trimDetailComparisonFoot");
+    const inheritedTitle = document.getElementById("trimDetailInheritedTitle");
+    const addedTitle = document.getElementById("trimDetailAddedTitle");
+    const upgrade = registeredDetail?.upgrade;
+    const hasComparison = Boolean(upgrade && Array.isArray(registeredDetail?.inheritedHighlights));
+    if (comparisonSection && inheritedList && addedList && comparisonFoot && inheritedTitle && addedTitle) {
+      comparisonSection.hidden = !hasComparison;
+      comparisonSection.classList.toggle("trim-detail-modal__comparison--pending", Boolean(hasComparison && upgrade?.verified === false));
+      inheritedList.replaceChildren();
+      addedList.replaceChildren();
+
+      if (hasComparison) {
+        const isUnverified = upgrade.verified === false;
+        const inheritedGroup = inheritedList.closest(".trim-detail-modal__comparison-group");
+        const addedBadge = comparisonSection.querySelector(".trim-detail-modal__upgrade-badge");
+        if (inheritedGroup) inheritedGroup.hidden = !registeredDetail.inheritedHighlights.length;
+        if (addedBadge) addedBadge.hidden = isUnverified;
+        inheritedTitle.textContent = `${upgrade.previous}에서 이어지는 주요 사양`;
+        addedTitle.textContent = isUnverified
+          ? (upgrade.label || "사양 비교 확인 필요")
+          : trimName.includes("블랙 잉크")
+            ? "달라지는 디자인 포인트"
+            : "새로 추가된 기능";
+
+        registeredDetail.inheritedHighlights.forEach(label => {
+          const li = document.createElement("li");
+          const marker = document.createElement("span");
+          marker.className = "trim-detail-modal__check";
+          marker.setAttribute("aria-hidden", "true");
+          marker.textContent = "✓";
+          const txt = document.createElement("span");
+          txt.textContent = label;
+          li.append(marker, txt);
+          inheritedList.append(li);
+        });
+
+        upgrade.items.forEach(label => {
+          const li = document.createElement("li");
+          const marker = document.createElement("span");
+          marker.className = isUnverified
+            ? "trim-detail-modal__check"
+            : "trim-detail-modal__check trim-detail-modal__check--plus";
+          marker.setAttribute("aria-hidden", "true");
+          marker.textContent = isUnverified ? "✓" : "+";
+          const txt = document.createElement("span");
+          txt.textContent = label;
+          li.append(marker, txt);
+          addedList.append(li);
+        });
+        if (isUnverified && !upgrade.items.length) {
+          const li = document.createElement("li");
+          li.className = "trim-detail-modal__comparison-pending";
+          li.textContent = "제공된 자료에서 이 트림의 추가 기본 사양을 확인할 수 없습니다.";
+          addedList.append(li);
+        }
+        comparisonSection.classList.toggle("trim-detail-modal__comparison--pending", isUnverified);
+        comparisonFoot.textContent = upgrade.note || "기본 사양은 연식과 선택 옵션에 따라 달라질 수 있습니다.";
+      }
+    }
+
+    if (compareTitle) compareTitle.textContent = hasComparison
+      ? "주요 사양"
+      : registeredDetail?.featureStatus === "optional" ? "선택 가능한 기능"
+      : registeredDetail?.referenceOnly ? "트림 적용 확인이 필요한 참고 기능"
+      : registeredDetail ? "주요 기본 사양" : "트림별로 달라질 수 있는 부분";
+    const defaultHighlights = []; // 미등록 상태: 임의의 사양을 표시하지 않습니다.
+
+    // 텍스트 노드로 넣어 트림명에 특수문자가 있어도 HTML로 해석되지 않게 합니다.
+    document.getElementById("trimDetailVehicle").textContent =
+      directModel ? `${state.brandName} ${state.carName}` : `${state.brandName} ${state.carName} · ${selectedModelName}`;
+    document.getElementById("trimDetailModalTitle").textContent = trimName;
+    // 별도의 하위 트림이 없는 차량은 확인 버튼 문구도 세부모델에 맞춰 표시합니다.
+    const footerQuestion = trimDetailModal?.querySelector(".trim-detail-modal__question");
+    if (footerQuestion) footerQuestion.textContent = directModel
+      ? "이 세부모델을 선택하시겠습니까?" : "이 트림을 선택하시겠습니까?";
+    if (confirmTrimSelectionButton) confirmTrimSelectionButton.textContent = directModel
+      ? "이 모델 선택하기" : "이 트림 선택하기";
+    trimDetailModal?.querySelectorAll(".trim-detail-modal__cancel span").forEach(label => {
+      label.textContent = directModel ? "다른 모델 보기" : "다른 트림 살펴보기";
+    });
+
+    // 차량 외관 대표 이미지는 사용하지 않고, 검증된 트림별 '핵심 기능' 이미지만 표시합니다.
+    // 미등록 트림은 이미지 블록 자체를 숨겨 잘못된 옵션을 안내하지 않도록 합니다.
+    // 등록 예시: window.AutoGenieTrimReference["브랜드|차량|세부모델|트림"].featureImage
+    const trimVisual = document.getElementById("trimDetailVisual");
+    const trimImage = document.getElementById("trimDetailImage");
+    const trimFeatureName = document.getElementById("trimDetailFeatureName");
+    const trimImageCaption = document.getElementById("trimDetailImageCaption");
+    const featureLabel = document.getElementById("trimDetailFeatureLabel");
+    if (featureLabel) featureLabel.textContent =
+      registeredDetail?.featureStatus === "added" ? "이번 트림부터 기본 적용되는 기능"
+      : registeredDetail?.featureStatus === "standard" ? "트림 기본 적용 기능"
+      : registeredDetail?.featureStatus === "optional" ? "이 트림에서 선택 가능한 기능"
+      : registeredDetail?.referenceOnly ? "차종 참고 기능" : "대표 핵심 기능";
+    if (trimVisual && trimImage && trimFeatureName && trimImageCaption) {
+      trimVisual.hidden = true;
+      trimImage.onerror = null;
+      trimImage.removeAttribute("src");
+      trimImage.alt = "";
+      // 기능 이미지가 없다면 차량 대표 사진으로 대신 채우지 않습니다.
+      // 설명/사양 영역은 이미지가 없어도 정상 표시합니다.
+      const featureImage = registeredDetail?.featureImage || "";
+      if (featureImage && registeredDetail?.featureTitle) {
+        trimFeatureName.textContent = registeredDetail.featureTitle;
+        trimImage.alt = registeredDetail.featureAlt || `${state.carName}의 ${registeredDetail.featureTitle} 기능 참고 이미지`;
+        trimImageCaption.textContent = registeredDetail.featureCaption || "기능 설명을 위한 이미지입니다. 실제 적용 사양은 연식과 옵션에 따라 달라질 수 있습니다.";
+        trimImage.classList.toggle("trim-detail-modal__image--contain", registeredDetail.featureImageDisplay === "contain");
+        // 공식 기능 이미지가 차단되거나 삭제되어도 차량 외관 사진으로 대체하지 않습니다.
+        // 잘못된 사진으로 기능을 안내하는 것보다 이미지 영역을 숨기고 정확한 텍스트만 표시합니다.
+        // 로컬 기능 이미지를 우선 사용합니다. 파일이 아직 업로드되지 않은 경우에만
+        // 동일한 기능을 촬영한 제조사 공식 이미지를 시도합니다(차량 외관 사진 사용 금지).
+        const remoteFeatureImage = ""; // 로컬 기능 이미지가 없는 경우 잘못된 차량 사진으로 대체하지 않음
+        let attemptedOfficialImage = false;
+        trimImage.onerror = () => {
+          if (!attemptedOfficialImage && remoteFeatureImage && trimImage.src !== remoteFeatureImage) {
+            attemptedOfficialImage = true;
+            trimImage.src = remoteFeatureImage;
+            return;
+          }
+          trimImage.onerror = null;
+          trimImage.removeAttribute("src");
+          trimVisual.hidden = true;
+        };
+        // 공식 기능 이미지가 표시되지 않아도 기능명·요약·국내 사양 텍스트는 유지됩니다.
+        trimImage.src = assetUrl(featureImage);
+        trimVisual.hidden = false;
+      } else {
+        trimFeatureName.textContent = "";
+        trimImageCaption.textContent = "";
+      }
+    }
+
+    document.getElementById("trimDetailModalSummary").textContent = registeredDetail?.summary ||
+      (directModel
+        ? "해당 세부모델의 상세 기능 설명은 아직 등록되지 않았습니다. 실제 사양은 상담 시 확인해 주세요."
+        : "해당 트림의 상세 설명은 아직 등록되지 않았습니다. 실제 사양은 상담 시 확인해 주세요.");
+
+    const noticeText = document.querySelector(".trim-detail-modal__notice p");
+    if (noticeText) noticeText.textContent = registeredDetail?.featureStatus === "optional"
+      ? "이 기능은 제공된 대표 차량 구성에서 선택 가능한 옵션으로 확인됐습니다. 실제 주문 가능 여부와 가격은 연식·엔진·패키지에 따라 달라질 수 있습니다."
+      : registeredDetail?.referenceOnly
+        ? "이 이미지는 해당 차종의 참고 기능이며, 현재 선택한 트림에서 새로 추가되거나 기본 제공된다는 뜻은 아닙니다. 정확한 적용 여부는 연식·세부모델별 사양표를 확인해 주세요."
+        : "기본 사양과 선택 옵션은 차량, 연식, 세부모델에 따라 달라질 수 있습니다. 정확한 구성은 상담 시 확인해 주세요.";
+    // 국산차와 동일한 "주요 사양" 체크 목록입니다.
+    // 차종별 참고 기능은 기본 사양으로 오해되지 않도록 섹션명을 별도로 표시합니다.
+    // 여러 기능 이미지는 카드형 그리드 없이, 리스트를 클릭하면 상단 한 장만 교체됩니다.
+    const infoSection = document.querySelector(".trim-detail-modal__info");
+    const referenceFeatures = registeredDetail?.referenceOnly && Array.isArray(registeredDetail?.features)
+      ? registeredDetail.features : [];
+    const hasHighlights = Array.isArray(registeredDetail?.highlights) && registeredDetail.highlights.length > 0;
+    const showReferenceList = !hasComparison && !hasHighlights && referenceFeatures.length > 0;
+    if (infoSection) infoSection.hidden = !hasComparison && !hasHighlights && !showReferenceList;
+    if (compareTitle && showReferenceList) compareTitle.textContent = "차종 참고 기능 (트림 적용 여부 확인 필요)";
+    const highlightList = document.getElementById("trimDetailHighlights");
+    highlightList.replaceChildren();
+    highlightList.hidden = hasComparison || (!hasHighlights && !showReferenceList);
+    const highlights = hasHighlights ? registeredDetail.highlights : defaultHighlights;
+    if (!hasComparison) {
+      if (showReferenceList) {
+        referenceFeatures.forEach(feature => {
+          const li = document.createElement("li");
+          li.className = "trim-detail-modal__reference-feature";
+          li.tabIndex = 0;
+          li.setAttribute("role", "button");
+          li.setAttribute("aria-label", `${feature.title} 이미지와 설명 보기`);
+          const marker = document.createElement("span");
+          marker.className = "trim-detail-modal__check";
+          marker.setAttribute("aria-hidden", "true");
+          marker.textContent = "✓";
+          const label = document.createElement("span");
+          // 적용 조건은 원본 기준으로 그대로 안내합니다.
+          label.textContent = feature.title + (feature.description ? ` — ${feature.description}` : "")
+            + (feature.condition ? ` (국내 적용 조건: ${feature.condition})` : "");
+          li.append(marker, label);
+          const swapReferenceImage = () => {
+            if (!trimVisual || !trimImage || !trimFeatureName || !trimImageCaption) return;
+            trimImage.onerror = null;
+            trimImage.removeAttribute("src");
+            if (!feature.image) { trimVisual.hidden = true; return; }
+            trimFeatureName.textContent = feature.title || "";
+            trimImage.alt = `${state.carName} - ${feature.title} 기능 참고 이미지`;
+            trimImageCaption.textContent = feature.description || "기능 설명 참고 이미지입니다.";
+            trimImage.classList.remove("trim-detail-modal__image--contain");
+            trimImage.onerror = () => { trimVisual.hidden = true; };
+            trimImage.src = assetUrl(feature.image);
+            trimVisual.hidden = false;
+            // 모바일 전체화면 / PC 팝업 내부에서만 스크롤합니다.
+            trimDetailModal.querySelector(".trim-detail-modal__body")?.scrollTo({top: 0, behavior: "smooth"});
+          };
+          li.addEventListener("click", swapReferenceImage);
+          li.addEventListener("keydown", event => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              swapReferenceImage();
+            }
+          });
+          highlightList.append(li);
+        });
+      } else {
+        highlights.forEach(item => {
+          const li = document.createElement("li");
+          const marker = document.createElement("span");
+          marker.className = "trim-detail-modal__check";
+          marker.setAttribute("aria-hidden", "true");
+          marker.textContent = "✓";
+          const label = document.createElement("span");
+          label.textContent = item;
+          li.append(marker, label);
+          highlightList.append(li);
+        });
+      }
+    }
+
+    pendingDirectModel = directModel ? selectedModelName : "";
+    pendingSubTrim = directModel ? "" : trimName;
+    if (trimDetailModal?.showModal) {
+      // 히스토리와 선택값이 뒤섞이지 않도록 모바일에서만 별도 화면 이력을 생성합니다.
+      if (window.matchMedia("(max-width: 768px)").matches) {
+        rememberWizardState();
+        window.history.pushState(
+          { ...(window.history.state || {}), [TRIM_DETAIL_HISTORY_KEY]: true }, "", window.location.href
+        );
+        trimDetailHistoryActive = true;
+      }
+      trimDetailModal.showModal();
+      setTrimBackgroundScrollLock(true);
+      // 최초 진입 시 닫기 버튼에 포커스 테두리가 생기지 않도록 제목으로 포커스를 이동합니다.
+      document.getElementById("trimDetailModalTitle")?.focus({ preventScroll: true });
+      // 이전 트림의 스크롤 위치가 남지 않도록 상세 내용을 처음부터 보여줍니다.
+      trimDetailModal.querySelector(".trim-detail-modal__body")?.scrollTo(0, 0);
+    } else {
+      // dialog 미지원 브라우저에서도 확인 전 자동 선택은 하지 않습니다.
+      if (window.confirm(`${state.brandName} ${state.carName} - ${selectedModelName}${directModel ? "" : ` / ${trimName}`}\n${directModel ? "이 세부모델" : "이 트림"}을 선택하시겠습니까?`)) {
+        commitTrimSelection();
+      } else {
+        pendingDirectModel = "";
+        pendingSubTrim = "";
+      }
+    }
+  }
+
+  function commitTrimSelection() {
+    if (state.step !== 2) return;
+    const directModel = Boolean(pendingDirectModel);
+    if (directModel) {
+      if (!usesDirectModelTrimDetail()) return;
+      const modelGroup = currentVehicle()?.detailModels?.find(item => item.name === pendingDirectModel);
+      if (!modelGroup) return;
+      // 하위 트림이 없는 차량은 세부모델만 확정합니다. 데이터 구조/견적 제출값은 그대로 둡니다.
+      state.trim = pendingDirectModel;
+      state.subTrim = "";
+    } else {
+      const selected = pendingSubTrim;
+      if (!selected || !state.trim) return;
+      const group = currentVehicle()?.detailModels?.find(item => item.name === state.trim);
+      if (!group?.trims.includes(selected)) return;
+      state.subTrim = selected;
+    }
+
+    // 실제 선택값을 확정한 후에만 렌더하여 닫기/뒤로가기로 미확정값이 선택되지 않게 합니다.
+    pendingDirectModel = "";
+    pendingSubTrim = "";
+    render();
+    showValidation("");
+    rememberWizardState();
+    if (trimDetailModal?.open) trimDetailModal.close();
+    setTrimBackgroundScrollLock(false);
+    scrollToNextSelection(directModel
+      ? '[data-option-section="engine-model"]'
+      : '[data-option-section="sub-trim"]', "start");
+  }
+
+  confirmTrimSelectionButton?.addEventListener("click", commitTrimSelection);
+  trimDetailModal?.querySelectorAll("[data-trim-close]").forEach(button => {
+    button.addEventListener("click", () => trimDetailModal.close());
+  });
+  trimDetailModal?.addEventListener("click", event => {
+    // 팝업 바깥의 어두운 배경을 클릭하면 취소합니다.
+    if (event.target === trimDetailModal) trimDetailModal.close();
+  });
+  trimDetailModal?.addEventListener("close", () => {
+    setTrimBackgroundScrollLock(false);
+    // 취소는 기존 선택 유지, 확정은 이미 commitTrimSelection에서 선택 반영.
+    pendingDirectModel = "";
+    pendingSubTrim = "";
+    if (trimDetailHistoryActive && !trimDetailHistoryExitPending) {
+      trimDetailHistoryExitPending = true;
+      window.history.back();
+    }
+  });
+
 
   function updateReviewPlacement() {
     if (!reviewSection || !reviewParking) return;
@@ -7748,7 +8465,7 @@ function paintSwatchStyle(paint) {
 
   // 세부모델 자체가 최종 트림인 브랜드는 하위 트림을 선택하지 않습니다.
   function hasNoSubTrim() {
-    return ["포르쉐", "벤틀리", "롤스로이스"].includes(state.brandName);
+    return ["포르쉐", "벤틀리", "롤스로이스"].includes(normalizeTrimKey(state.brandName));
   }
 
   function renderStepTwo() {
@@ -7772,7 +8489,7 @@ function paintSwatchStyle(paint) {
 
               return `
                 <section class="engine-model-card ${isActive ? "active" : ""}">
-                  <button class="engine-model-main" type="button" data-engine-model="${group.name}">
+                  <button class="engine-model-main" type="button" data-engine-model="${group.name}" ${ENABLE_TRIM_DETAIL && usesDirectModelTrimDetail() ? 'aria-haspopup="dialog" aria-controls="trimDetailModal"' : ''}>
                     <strong>${group.name}</strong>
                     <span class="radio-ui ${isActive ? "checked" : ""}" aria-hidden="true"></span>
                   </button>
@@ -7780,7 +8497,7 @@ function paintSwatchStyle(paint) {
                   ${isActive && !hasNoSubTrim() ? `
                     <div class="sub-trim-list" data-option-section="sub-trim">
                       ${group.trims.map(item => `
-                        <button class="sub-trim-item ${item === state.subTrim ? "active" : ""}" type="button" data-sub-trim="${item}">
+                        <button class="sub-trim-item ${item === state.subTrim ? "active" : ""}" type="button" data-sub-trim="${item}" ${ENABLE_TRIM_DETAIL ? 'aria-haspopup="dialog" aria-controls="trimDetailModal"' : ''} aria-pressed="${item === state.subTrim}">
                           <span class="radio-ui ${item === state.subTrim ? "checked" : ""}" aria-hidden="true"></span>
                           <strong>${item}</strong>
                         </button>
@@ -8384,6 +9101,17 @@ function paintSwatchStyle(paint) {
 
     content.querySelectorAll("[data-engine-model]").forEach(button => {
       button.addEventListener("click", () => {
+        // 포르쉐·벤틀리·롤스로이스: 하위 트림 버튼 없이 세부모델을 눌렀을 때 안내 팝업을 엽니다.
+        // 팝업 OFF이면 이전과 같이 세부모델이 즉시 선택됩니다.
+        if (ENABLE_TRIM_DETAIL && usesDirectModelTrimDetail()) {
+          if (!trimDetailModal?.showModal) {
+            console.error("[오토지니] 트림 팝업 HTML이 없습니다. index.html, css/style.css, js/script.js를 함께 업데이트하세요.");
+            showValidation("트림 안내 창을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
+            return;
+          }
+          openTrimDetailModal(button.dataset.engineModel, { directModel: true });
+          return;
+        }
         state.trim = button.dataset.engineModel;
         state.subTrim = "";
         render();
@@ -8396,11 +9124,8 @@ function paintSwatchStyle(paint) {
 
     content.querySelectorAll("[data-sub-trim]").forEach(button => {
       button.addEventListener("click", () => {
-        state.subTrim = button.dataset.subTrim;
-        render();
-
-        // 하위 트림 선택 시에도 하단 버튼으로 자동 이동하지 않습니다.
-        scrollToNextSelection('[data-option-section="engine-model"]', "start");
+        // OFF: 기존처럼 바로 선택 / ON: 팝업에서 확인한 뒤 선택 확정.
+        openTrimDetailModal(button.dataset.subTrim);
       });
     });
 

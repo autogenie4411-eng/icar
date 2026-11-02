@@ -2693,14 +2693,20 @@ body:has(.wizard-page) {
     color: #2456c5;
     font-size: var(--font-size-base);
     position: relative;
+    /* 점 애니메이션이 줄 높이와 중앙 정렬을 바꾸지 않도록 공간만 확보 */
+    padding-right: 18px;
 }
 .loader-status:after {
-    vertical-align: bottom;
     content: "...";
+    position: absolute;
+    right: 0;
+    bottom: 0;
     width: 16px;
-    margin-left: 2px;
+    height: 1em;
+    line-height: 1;
     animation: 1.1s steps(4, end) infinite loaderEllipsis;
-    display: inline-block;
+    display: block;
+    white-space: nowrap;
     overflow: hidden;
 }
 @keyframes loaderPulse {
@@ -2726,10 +2732,10 @@ body:has(.wizard-page) {
 }
 @keyframes loaderEllipsis {
     0% {
-        width: 0;
+        clip-path: inset(0 100% 0 0);
     }
     to {
-        width: 16px;
+        clip-path: inset(0 0 0 0);
     }
 }
 @keyframes loaderExit {
@@ -8671,3 +8677,736 @@ body.review-dialog-open {
         margin-right: -2px;
     }
 }
+
+
+/* =========================================================
+   STEP 02 | 트림 선택 확인 팝업 (수입차)
+   주요 파일: index.html / js/script.js / css/style.css
+========================================================= */
+.trim-selection-hint {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 4px 0 15px;
+    color: #667085;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.5;
+    word-break: keep-all;
+}
+.trim-selection-hint > span {
+    flex: 0 0 auto;
+    font-size: 17px;
+    color: #326bfa;
+}
+
+/* 트림 팝업 노출 중 데스크탑 배경 스크롤 방지: 팝업 내부 스크롤은 그대로 허용 */
+@media (min-width: 769px) {
+    html.trim-detail-scroll-locked {
+        overflow: hidden !important;
+        scrollbar-gutter: stable;
+        overscroll-behavior: none;
+    }
+    body.trim-detail-scroll-locked {
+        overflow: hidden !important;
+    }
+}
+
+.trim-detail-modal {
+    position: fixed;
+    inset: 0;
+    box-sizing: border-box;
+    width: min(460px, calc(100% - 32px));
+    max-width: 460px;
+    max-height: min(740px, calc(100dvh - 32px));
+    margin: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 18px;
+    background: #fff;
+    color: #17233d;
+    overflow: hidden;
+    box-shadow: 0 24px 80px rgba(18, 38, 74, 0.26);
+}
+.trim-detail-modal::backdrop {
+    background: rgba(16, 24, 40, 0.58);
+    -webkit-backdrop-filter: blur(2px);
+    backdrop-filter: blur(2px);
+}
+.trim-detail-modal__panel {
+    display: flex;
+    flex-direction: column;
+    max-height: min(740px, calc(100dvh - 32px));
+    overflow: hidden;
+}
+.trim-detail-modal__header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 15px 22px 13px;
+    border-bottom: 1px solid #edf0f5;
+}
+.trim-detail-modal__eyebrow {
+    color: #667085;
+    font-size: 13px;
+    font-weight: 750;
+}
+.trim-detail-modal__close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 34px;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border: 0;
+    border-radius: 9px;
+    background: #f4f7fb;
+    color: #667085;
+    font-size: 24px;
+    font-family: inherit;
+    line-height: 1;
+    cursor: pointer;
+}
+.trim-detail-modal__body {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    padding: 20px 22px 18px;
+}
+.trim-detail-modal__vehicle {
+    display: inline-block;
+    max-width: 100%;
+    padding: 6px 10px;
+    border-radius: 7px;
+    background: #edf4ff;
+    color: #326bfa;
+    font-size: 12px;
+    font-weight: 750;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+.trim-detail-modal__title {
+    margin: 12px 0 9px;
+    color: #101828;
+    font-size: clamp(21px, 5vw, 25px);
+    font-weight: 850;
+    line-height: 1.35;
+    letter-spacing: -0.035em;
+    overflow-wrap: anywhere;
+}
+.trim-detail-modal__summary {
+    margin: 0;
+    color: #475467;
+    font-size: 14px;
+    line-height: 1.75;
+    word-break: keep-all;
+}
+.trim-detail-modal__info {
+    margin-top: 21px;
+    padding-top: 19px;
+    border-top: 1px solid #edf0f5;
+}
+.trim-detail-modal__info h3 {
+    margin: 0 0 13px;
+    color: #182230;
+    font-size: 14px;
+    font-weight: 800;
+}
+.trim-detail-modal__highlights {
+    display: grid;
+    gap: 12px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+.trim-detail-modal__highlights li {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    color: #475467;
+    font-size: 13px;
+    line-height: 1.6;
+    word-break: keep-all;
+}
+.trim-detail-modal__check {
+    flex: 0 0 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 1.6em;
+    margin-top: 0;
+    color: #326bfa;
+    font-size: 13px;
+    font-weight: 900;
+    line-height: 1;
+    background: transparent;
+}
+.trim-detail-modal__notice {
+    margin-top: 20px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: #f6f8fb;
+}
+.trim-detail-modal__notice strong {
+    color: #475467;
+    font-size: 12px;
+    font-weight: 800;
+}
+.trim-detail-modal__notice p {
+    margin: 5px 0 0;
+    color: #667085;
+    font-size: 12px;
+    line-height: 1.65;
+    word-break: keep-all;
+}
+.trim-detail-modal__footer {
+    flex: 0 0 auto;
+    padding: 16px 22px 20px;
+    border-top: 1px solid #edf0f5;
+    background: #fff;
+}
+.trim-detail-modal__question {
+    margin: 0 0 12px;
+    color: #182230;
+    font-size: 14px;
+    font-weight: 800;
+    text-align: center;
+}
+.trim-detail-modal__actions {
+    display: grid;
+    width: 100%;
+    align-self: stretch;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+.trim-detail-modal__cancel,
+.trim-detail-modal__confirm {
+    width: 100%;
+    box-sizing: border-box;
+    min-width: 0;
+    min-height: 48px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 800;
+    cursor: pointer;
+}
+.trim-detail-modal__cancel {
+    border: 1px solid #d8dfe9;
+    background: #fff;
+    color: #475467;
+}
+.trim-detail-modal__confirm {
+    border: 1px solid #326bfa;
+    background: #326bfa;
+    color: #fff;
+}
+.trim-detail-modal__cancel:focus-visible,
+.trim-detail-modal__confirm:focus-visible,
+.trim-detail-modal__close:focus-visible {
+    outline: 3px solid rgba(50, 107, 250, 0.28);
+    outline-offset: 2px;
+}
+@media (max-width: 480px) {
+    .trim-detail-modal {
+        width: calc(100% - 24px);
+        max-height: calc(100dvh - 24px);
+        border-radius: 16px;
+    }
+    .trim-detail-modal__panel {
+        max-height: calc(100dvh - 24px);
+    }
+    .trim-detail-modal__header {
+        padding: 13px 18px 11px;
+    }
+    .trim-detail-modal__body {
+        padding: 17px 18px 16px;
+    }
+    .trim-detail-modal__footer {
+        padding: 14px 18px 18px;
+    }
+    .trim-detail-modal__title {
+        margin-top: 10px;
+    }
+    .trim-detail-modal__info {
+        margin-top: 16px;
+        padding-top: 16px;
+    }
+    .trim-selection-hint {
+        font-size: 12px;
+    }
+}
+
+/* =========================================================
+   STEP 02 | 모바일에서는 트림 설명을 독립 화면처럼 전면 표시
+   PC(769px 이상): 기존 중앙 팝업을 그대로 사용
+   모바일(768px 이하): 상단 내비게이션 / 본문 / 하단 선택 고정
+========================================================= */
+.trim-detail-modal__back,
+.trim-detail-modal__cancel-mobile {
+    display: none;
+}
+
+@media (max-width: 768px) {
+    .trim-detail-modal {
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100%;
+        height: 100dvh;
+        max-width: none;
+        max-height: none;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        box-shadow: none;
+        background: #fff;
+        overscroll-behavior: contain;
+    }
+
+    .trim-detail-modal::backdrop {
+        background: #fff;
+        -webkit-backdrop-filter: none;
+        backdrop-filter: none;
+    }
+
+    .trim-detail-modal__panel {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        height: 100%;
+        max-height: none;
+        overflow: hidden;
+        background: #fff;
+    }
+
+    .trim-detail-modal__header {
+        flex: 0 0 auto;
+        display: grid;
+        grid-template-columns: 42px minmax(0, 1fr) 42px;
+        align-items: center;
+        gap: 6px;
+        min-height: 60px;
+        padding: max(8px, env(safe-area-inset-top)) 15px 8px;
+        box-sizing: border-box;
+        border-bottom: 1px solid #e9edf2;
+        background: #fff;
+    }
+
+    .trim-detail-modal__back {
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        width: 42px;
+        height: 42px;
+        padding: 0 0 0 3px;
+        border: 0;
+        background: transparent;
+        color: #182230;
+        cursor: pointer;
+    }
+
+    .trim-detail-modal__eyebrow {
+        color: #182230;
+        font-size: 16px;
+        font-weight: 800;
+        text-align: center;
+        white-space: nowrap;
+    }
+
+    .trim-detail-modal__close {
+        justify-self: end;
+        width: 38px;
+        height: 38px;
+        padding: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: #667085;
+        font-size: 26px;
+        font-weight: 400;
+    }
+
+    .trim-detail-modal__body {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        padding: 26px 22px 36px;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .trim-detail-modal__vehicle {
+        padding: 7px 11px;
+        font-size: 12px;
+    }
+
+    .trim-detail-modal__title {
+        margin: 18px 0 10px;
+        font-size: clamp(24px, 6vw, 30px);
+        line-height: 1.32;
+    }
+
+    .trim-detail-modal__summary {
+        font-size: 15px;
+        line-height: 1.75;
+    }
+
+    .trim-detail-modal__info {
+        margin-top: 30px;
+        padding-top: 25px;
+    }
+
+    .trim-detail-modal__info h3 {
+        margin-bottom: 18px;
+        font-size: 16px;
+    }
+
+    .trim-detail-modal__highlights {
+        gap: 17px;
+    }
+
+    .trim-detail-modal__highlights li {
+        gap: 11px;
+        font-size: 14px;
+        line-height: 1.6;
+    }
+
+    .trim-detail-modal__check {
+        flex-basis: 15px;
+        width: 15px;
+        height: 1.6em;
+        margin-top: 0;
+        font-size: 14px;
+    }
+
+    .trim-detail-modal__notice {
+        margin-top: 30px;
+        padding: 17px 16px;
+    }
+
+    .trim-detail-modal__notice strong,
+    .trim-detail-modal__notice p {
+        font-size: 12.5px;
+    }
+
+    .trim-detail-modal__footer {
+        display: block;
+        flex: 0 0 auto;
+        padding: 12px 20px max(15px, env(safe-area-inset-bottom));
+        border-top: 1px solid #e9edf2;
+        background: #fff;
+        box-shadow: 0 -8px 24px rgba(20, 31, 51, 0.035);
+    }
+
+    .trim-detail-modal__question,
+    .trim-detail-modal__cancel-desktop {
+        display: none;
+    }
+
+    .trim-detail-modal__actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        width: 100%;
+        gap: 9px;
+    }
+
+    .trim-detail-modal__confirm {
+        width: 100%;
+        min-height: 52px;
+        border-radius: 10px;
+        font-size: clamp(12px, 3.5vw, 14px);
+    }
+
+    .trim-detail-modal__cancel {
+        width: 100%;
+        min-height: 52px;
+        border: 1px solid #d8dfe9;
+        border-radius: 10px;
+        background: #fff;
+        color: #475467;
+        font-size: clamp(12px, 3.5vw, 14px);
+        font-weight: 750;
+    }
+
+    .trim-detail-modal__cancel-mobile {
+        display: inline;
+    }
+
+    .trim-detail-modal__back:focus-visible {
+        outline: 3px solid rgba(50, 107, 250, .3);
+        outline-offset: 1px;
+    }
+}
+
+/* 짧은 화면에서도 본문만 스크롤되고 선택 버튼은 계속 보입니다. */
+@media (max-width: 768px) and (max-height: 480px) {
+    .trim-detail-modal__header { min-height: 50px; padding-top: 4px; padding-bottom: 4px; }
+    .trim-detail-modal__body { padding-top: 16px; padding-bottom: 20px; }
+    .trim-detail-modal__footer { padding-top: 5px; padding-bottom: max(6px, env(safe-area-inset-bottom)); }
+    .trim-detail-modal__confirm { min-height: 46px; }
+    .trim-detail-modal__cancel { min-height: 46px; }
+}
+
+/* 트림 기능 이미지: 실제 사양을 확인한 트림에만 별도 기능 이미지를 표시 */
+.trim-detail-modal__title:focus,
+.trim-detail-modal__title:focus-visible {
+    outline: none !important;
+    box-shadow: none !important;
+}
+.trim-detail-modal__visual {
+    margin: 17px 0 19px;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid #e4eaf3;
+    border-radius: 12px;
+    background: #f7f9fc;
+}
+.trim-detail-modal__visual[hidden] { display: none !important; }
+.trim-detail-modal__visual-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px 10px;
+    padding: 13px 15px 12px;
+    background: #f7f9fc;
+}
+.trim-detail-modal__visual-heading span {
+    color: #326bfa;
+    font-size: 11px;
+    font-weight: 800;
+}
+.trim-detail-modal__visual-heading strong {
+    color: #17233d;
+    font-size: 14px;
+    font-weight: 800;
+}
+.trim-detail-modal__visual img {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 16 / 9;
+    object-fit: cover;
+    object-position: center;
+}
+.trim-detail-modal__visual figcaption {
+    padding: 10px 14px 12px;
+    color: #667085;
+    background: #fff;
+    font-size: 11px;
+    line-height: 1.55;
+    word-break: keep-all;
+}
+.trim-detail-modal__summary {
+    white-space: pre-line;
+}
+@media (max-width: 768px) {
+    .trim-detail-modal__visual { margin: 20px 0; }
+    .trim-detail-modal__visual-heading { padding: 13px 14px 12px; }
+    .trim-detail-modal__visual-heading strong { font-size: 14px; }
+    .trim-detail-modal__visual figcaption { font-size: 11px; }
+    .trim-detail-modal__actions > button {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 0;
+        text-align: center;
+        line-height: 1.3;
+        word-break: keep-all;
+        white-space: normal;
+    }
+}
+
+
+/* GRANDEUR: 주요 사양 비교 통합 영역 */
+.trim-detail-modal__comparison {
+    margin: 6px 0 0;
+    border: 1px solid #d7e2f5;
+    border-radius: 16px;
+    background: #fbfcff;
+    overflow: hidden;
+}
+.trim-detail-modal__comparison[hidden] { display: none !important; }
+.trim-detail-modal__comparison-group {
+    padding: 16px 17px 14px;
+}
+.trim-detail-modal__comparison-group + .trim-detail-modal__comparison-group {
+    border-top: 1px solid #e4ebf7;
+}
+.trim-detail-modal__comparison-group--upgrade {
+    background: linear-gradient(120deg, #f0f5ff 0%, #f8fbff 100%);
+}
+.trim-detail-modal__comparison-label {
+    display: block;
+    margin: 0 0 12px;
+    color: #17233d;
+    font-size: 15px;
+    line-height: 1.5;
+    font-weight: 850;
+    word-break: keep-all;
+}
+.trim-detail-modal__upgrade-badge {
+    padding: 4px 7px;
+    border-radius: 5px;
+    background: #326bfa;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: .04em;
+}
+.trim-detail-modal__comparison-upgrade-top {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+.trim-detail-modal__comparison-upgrade-top .trim-detail-modal__comparison-label {
+    flex: 1 1 155px;
+    min-width: 0;
+    margin: 0;
+    color: #1e45a8;
+    font-size: 14px;
+}
+.trim-detail-modal__comparison-foot {
+    margin: 0;
+    padding: 12px 17px 14px;
+    border-top: 1px solid #e4ebf7;
+    color: #526485;
+    font-size: 11px;
+    line-height: 1.6;
+    background: #fbfcff;
+    word-break: keep-all;
+}
+.trim-detail-modal__highlights[hidden] { display: none !important; }
+.trim-detail-modal__highlights--inherited,
+.trim-detail-modal__highlights--upgrade {
+    margin: 0;
+}
+.trim-detail-modal__highlights--upgrade .trim-detail-modal__check--plus {
+    color: #326bfa;
+    font-size: 16px;
+    font-weight: 900;
+}
+/* 그랜저 비교 목록: 체크/플러스를 텍스트 첫 줄의 기준선에 맞춰 정렬 */
+.trim-detail-modal__comparison .trim-detail-modal__highlights li {
+    display: grid;
+    grid-template-columns: 13px minmax(0, 1fr);
+    column-gap: 5px;
+    align-items: baseline;
+}
+.trim-detail-modal__comparison .trim-detail-modal__check,
+.trim-detail-modal__comparison .trim-detail-modal__check--plus {
+    display: block;
+    width: 13px;
+    height: auto;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    font-family: inherit;
+    font-size: inherit;
+    font-weight: 900;
+    line-height: inherit;
+    text-align: center;
+    background: transparent;
+}
+@media (max-width: 768px) {
+    .trim-detail-modal__comparison { margin-top: 2px; }
+    .trim-detail-modal__comparison-group { padding: 15px 15px 13px; }
+    .trim-detail-modal__comparison-label { font-size: 14px; margin-bottom: 11px; }
+    .trim-detail-modal__comparison-upgrade-top .trim-detail-modal__comparison-label { font-size: 13.5px; }
+    .trim-detail-modal__comparison-foot { padding: 11px 15px 13px; }
+}
+@media (max-width: 359px) {
+    .trim-detail-modal__comparison-group { padding: 13px 12px; }
+    .trim-detail-modal__comparison-upgrade-top { gap: 6px; }
+    .trim-detail-modal__comparison-label { font-size: 12.5px; }
+    .trim-detail-modal__comparison-upgrade-top .trim-detail-modal__comparison-label { font-size: 12.5px; }
+    .trim-detail-modal__comparison-foot { padding: 10px 12px 12px; }
+}
+
+
+
+/* PC 트림 팝업 헤더: 제목과 원형 닫기 버튼을 수직 중앙 정렬 */
+@media (min-width: 769px) {
+    .trim-detail-modal__header {
+        min-height: 64px;
+        box-sizing: border-box;
+        padding: 0 22px;
+        align-items: center;
+    }
+    .trim-detail-modal__eyebrow {
+        display: flex;
+        align-items: center;
+        min-height: 36px;
+        line-height: 1.3;
+    }
+    .trim-detail-modal__close {
+        position: relative;
+        flex: 0 0 36px;
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        font-size: 0; /* 기존 × 글리프의 폰트별 위치 오차 방지 */
+        line-height: 0;
+    }
+    .trim-detail-modal__close::before,
+    .trim-detail-modal__close::after {
+        content: "";
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 13px;
+        height: 1.8px;
+        border-radius: 1px;
+        background: currentColor;
+    }
+    .trim-detail-modal__close::before {
+        transform: translate(-50%, -50%) rotate(45deg);
+    }
+    .trim-detail-modal__close::after {
+        transform: translate(-50%, -50%) rotate(-45deg);
+    }
+}
+
+/* 세로형 기능 이미지와 작은 아이콘을 잘림 없이 표시 */
+.trim-detail-modal__visual img.trim-detail-modal__image--contain {
+    object-fit: contain;
+    background: #f8fafc;
+}
+
+/* 트림별 비교 자료가 부족한 경우: 실제 업그레이드 사양과 혼동되지 않는 중립 안내 */
+.trim-detail-modal__comparison .trim-detail-modal__upgrade-badge[hidden],
+.trim-detail-modal__comparison-group[hidden] { display: none !important; }
+.trim-detail-modal__comparison--pending {
+    border-color: #e3e8ef;
+    background: #fafbfc;
+}
+.trim-detail-modal__comparison--pending .trim-detail-modal__comparison-group--upgrade {
+    background: #f8f9fb;
+}
+.trim-detail-modal__comparison--pending .trim-detail-modal__comparison-upgrade-top .trim-detail-modal__comparison-label {
+    color: #475467;
+}
+.trim-detail-modal__comparison .trim-detail-modal__comparison-pending {
+    display: block;
+    color: #667085;
+    font-size: 12px;
+    line-height: 1.65;
+    word-break: keep-all;
+}
+.trim-detail-modal__comparison .trim-detail-modal__highlights .trim-detail-modal__comparison-pending {
+    display: block;
+    grid-column: 1 / -1;
+    padding-left: 0;
+}
+
+/* 수입차 참고 기능 항목: 국내차의 체크 목록 디자인 그대로 사용하면서 이미지 전환 가능 */
+.trim-detail-modal__reference-feature { cursor: pointer; }
+.trim-detail-modal__reference-feature:focus-visible { outline: 2px solid #326bfa; outline-offset: 3px; border-radius: 3px; }
