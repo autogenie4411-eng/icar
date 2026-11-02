@@ -8065,16 +8065,21 @@ const vehicleCatalog = [
     pendingDirectModel = directModel ? selectedModelName : "";
     pendingSubTrim = directModel ? "" : trimName;
     if (trimDetailModal?.showModal) {
-      // 히스토리와 선택값이 뒤섞이지 않도록 모바일에서만 별도 화면 이력을 생성합니다.
-      if (window.matchMedia("(max-width: 768px)").matches) {
-        rememberWizardState();
-        window.history.pushState(
-          { ...(window.history.state || {}), [TRIM_DETAIL_HISTORY_KEY]: true }, "", window.location.href
-        );
-        trimDetailHistoryActive = true;
-      }
       trimDetailModal.showModal();
       setTrimBackgroundScrollLock(true);
+      // 히스토리와 선택값이 뒤섞이지 않도록 모바일에서만 별도 화면 이력을 생성합니다.
+      // 일부 모바일 WebView에서 이력 변경이 제한되어도 팝업 표시는 유지합니다.
+      if (window.matchMedia("(max-width: 768px)").matches) {
+        try {
+          rememberWizardState();
+          window.history.pushState(
+            { ...(window.history.state || {}), [TRIM_DETAIL_HISTORY_KEY]: true }, "", window.location.href
+          );
+          trimDetailHistoryActive = true;
+        } catch (error) {
+          console.warn("[오토지니] 모바일 트림 팝업의 뒤로가기 이력을 추가하지 못했습니다.", error);
+        }
+      }
       // 최초 진입 시 닫기 버튼에 포커스 테두리가 생기지 않도록 제목으로 포커스를 이동합니다.
       document.getElementById("trimDetailModalTitle")?.focus({ preventScroll: true });
       // 이전 트림의 스크롤 위치가 남지 않도록 상세 내용을 처음부터 보여줍니다.
@@ -9104,7 +9109,7 @@ function paintSwatchStyle(paint) {
         // 포르쉐·벤틀리·롤스로이스: 하위 트림 버튼 없이 세부모델을 눌렀을 때 안내 팝업을 엽니다.
         // 팝업 OFF이면 이전과 같이 세부모델이 즉시 선택됩니다.
         if (ENABLE_TRIM_DETAIL && usesDirectModelTrimDetail()) {
-          if (!trimDetailModal?.showModal) {
+          if (!trimDetailModal) {
             console.error("[오토지니] 트림 팝업 HTML이 없습니다. index.html, css/style.css, js/script.js를 함께 업데이트하세요.");
             showValidation("트림 안내 창을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
             return;
