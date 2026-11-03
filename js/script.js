@@ -7432,13 +7432,7 @@ const vehicleCatalog = [
   const reviewSection = document.getElementById("reviewSection");
   const reviewParking = document.getElementById("reviewParking");
 
-  // [트림 상세 팝업 사용 여부]
-  // false: 트림 버튼 클릭 시 설명 팝업 없이 즉시 선택 (기본: 보류)
-  // true : 트림 설명 팝업을 열고 [이 트림 선택하기]를 눌러 선택
-  // 사용 설정만 바꾸면 됩니다. 할인율 배지·차단 경고·견적 신청 기능은 그대로 유지됩니다.
-  const ENABLE_TRIM_DETAIL = true;
-
-  // STEP 02: 상세 팝업을 사용할 때만 확인 후 subTrim에 반영합니다.
+  // STEP 02: 트림은 상세 팝업에서 확인한 후에만 선택값에 반영합니다.
   const trimDetailModal = document.getElementById("trimDetailModal");
   const confirmTrimSelectionButton = document.getElementById("confirmTrimSelection");
   let pendingSubTrim = "";
@@ -7786,22 +7780,6 @@ const vehicleCatalog = [
     const modelGroup = currentVehicle()?.detailModels?.find(group => group.name === selectedModelName);
     if (!modelGroup || (!directModel && !modelGroup.trims.includes(trimName))) {
       console.warn("[오토지니] 차량 모델이 등록되지 않아 트림 팝업을 열지 못했습니다.", state.brandName, state.carName, selectedModelName, trimName);
-      return;
-    }
-
-    // OFF 시에는 기존 모델/트림 선택 동작 그대로 즉시 확정합니다.
-    if (!ENABLE_TRIM_DETAIL) {
-      if (directModel) {
-        state.trim = selectedModelName;
-        state.subTrim = "";
-        render();
-        showValidation("");
-        rememberWizardState();
-        scrollToNextSelection('[data-option-section="engine-model"]', "start");
-      } else {
-        pendingSubTrim = trimName;
-        commitTrimSelection();
-      }
       return;
     }
 
@@ -8494,7 +8472,7 @@ function paintSwatchStyle(paint) {
 
               return `
                 <section class="engine-model-card ${isActive ? "active" : ""}">
-                  <button class="engine-model-main" type="button" data-engine-model="${group.name}" ${ENABLE_TRIM_DETAIL && usesDirectModelTrimDetail() ? 'aria-haspopup="dialog" aria-controls="trimDetailModal"' : ''}>
+                  <button class="engine-model-main" type="button" data-engine-model="${group.name}" ${usesDirectModelTrimDetail() ? 'aria-haspopup="dialog" aria-controls="trimDetailModal"' : ''}>
                     <strong>${group.name}</strong>
                     <span class="radio-ui ${isActive ? "checked" : ""}" aria-hidden="true"></span>
                   </button>
@@ -8502,7 +8480,7 @@ function paintSwatchStyle(paint) {
                   ${isActive && !hasNoSubTrim() ? `
                     <div class="sub-trim-list" data-option-section="sub-trim">
                       ${group.trims.map(item => `
-                        <button class="sub-trim-item ${item === state.subTrim ? "active" : ""}" type="button" data-sub-trim="${item}" ${ENABLE_TRIM_DETAIL ? 'aria-haspopup="dialog" aria-controls="trimDetailModal"' : ''} aria-pressed="${item === state.subTrim}">
+                        <button class="sub-trim-item ${item === state.subTrim ? "active" : ""}" type="button" data-sub-trim="${item}" aria-haspopup="dialog" aria-controls="trimDetailModal" aria-pressed="${item === state.subTrim}">
                           <span class="radio-ui ${item === state.subTrim ? "checked" : ""}" aria-hidden="true"></span>
                           <strong>${item}</strong>
                         </button>
@@ -8592,6 +8570,17 @@ function paintSwatchStyle(paint) {
             <div><dt>이용조건</dt><dd>${state.usage || "상담 후 결정"} · ${state.initialCost || "상담 후 결정"}${!["초기비용 0원", "상담 후 결정"].includes(state.initialCost) && state.rate ? ` ${state.rate}` : ""}</dd></div>
             <div><dt>주행거리</dt><dd>${state.mileage || "상담 후 결정"}</dd></div>
             <div class="discount-rate"><dt>${currentMonth}월 할인율</dt><dd>최대 20%</dd></div>
+            <div class="delivery-event" role="group" aria-label="출고이벤트 혜택">
+              <dt class="delivery-event__ticket">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                  <rect x="3.5" y="9" width="17" height="12" rx="1.6"></rect>
+                  <path d="M2.5 9h19V6.5a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5V9Z"></path>
+                  <path d="M12 5v16M12 5C10 5 7.5 4.3 7.5 2.9a1.8 1.8 0 0 1 2-1.5C11.2 1.4 12 3.2 12 5ZM12 5c2 0 4.5-.7 4.5-2.1a1.8 1.8 0 0 0-2-1.5C12.8 1.4 12 3.2 12 5Z"></path>
+                </svg>
+                <span>출고이벤트</span>
+              </dt>
+              <dd class="delivery-event__benefits">블랙박스, 썬팅, 코일매트, 상품권 <strong>최대 100만원</strong> 증정</dd>
+            </div>
             ${isElectricVehicle() ? `<div><dt>보조금 지역</dt><dd data-summary-subsidy-region>${state.subsidyRegion || "선택 전"}</dd></div>` : ""}
           </dl>
         </div>
@@ -9107,8 +9096,7 @@ function paintSwatchStyle(paint) {
     content.querySelectorAll("[data-engine-model]").forEach(button => {
       button.addEventListener("click", () => {
         // 포르쉐·벤틀리·롤스로이스: 하위 트림 버튼 없이 세부모델을 눌렀을 때 안내 팝업을 엽니다.
-        // 팝업 OFF이면 이전과 같이 세부모델이 즉시 선택됩니다.
-        if (ENABLE_TRIM_DETAIL && usesDirectModelTrimDetail()) {
+        if (usesDirectModelTrimDetail()) {
           if (!trimDetailModal) {
             console.error("[오토지니] 트림 팝업 HTML이 없습니다. index.html, css/style.css, js/script.js를 함께 업데이트하세요.");
             showValidation("트림 안내 창을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
@@ -9129,7 +9117,7 @@ function paintSwatchStyle(paint) {
 
     content.querySelectorAll("[data-sub-trim]").forEach(button => {
       button.addEventListener("click", () => {
-        // OFF: 기존처럼 바로 선택 / ON: 팝업에서 확인한 뒤 선택 확정.
+        // 팝업에서 확인한 뒤 선택을 확정합니다.
         openTrimDetailModal(button.dataset.subTrim);
       });
     });
