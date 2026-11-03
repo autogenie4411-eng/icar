@@ -1,6 +1,9 @@
 (() => {
   "use strict";
 
+  // 트림 설명 팝업 ON/OFF: true = 사용, false = 미사용 (선택 즉시 적용)
+  const ENABLE_TRIM_DETAIL_POPUP = false;
+
   const currentMonth = new Date().getMonth() + 1;
 
   // 현재 월은 화면 렌더링 시마다 계산합니다.
@@ -7773,7 +7776,7 @@ const vehicleCatalog = [
   }
 
   function openTrimDetailModal(trimName, { directModel = false } = {}) {
-    if (!trimName || state.step !== 2) return;
+    if (!ENABLE_TRIM_DETAIL_POPUP || !trimName || state.step !== 2) return;
     // 일반 차량은 하위 트림, 포르쉐·벤틀리·롤스로이스는 세부모델을 팝업 대상으로 사용합니다.
     const selectedModelName = directModel ? trimName : state.trim;
     if (!selectedModelName || (directModel && !usesDirectModelTrimDetail())) return;
@@ -8472,7 +8475,7 @@ function paintSwatchStyle(paint) {
 
               return `
                 <section class="engine-model-card ${isActive ? "active" : ""}">
-                  <button class="engine-model-main" type="button" data-engine-model="${group.name}" ${usesDirectModelTrimDetail() ? 'aria-haspopup="dialog" aria-controls="trimDetailModal"' : ''}>
+                  <button class="engine-model-main" type="button" data-engine-model="${group.name}" ${ENABLE_TRIM_DETAIL_POPUP && usesDirectModelTrimDetail() ? 'aria-haspopup="dialog" aria-controls="trimDetailModal"' : ''}>
                     <strong>${group.name}</strong>
                     <span class="radio-ui ${isActive ? "checked" : ""}" aria-hidden="true"></span>
                   </button>
@@ -8480,7 +8483,7 @@ function paintSwatchStyle(paint) {
                   ${isActive && !hasNoSubTrim() ? `
                     <div class="sub-trim-list" data-option-section="sub-trim">
                       ${group.trims.map(item => `
-                        <button class="sub-trim-item ${item === state.subTrim ? "active" : ""}" type="button" data-sub-trim="${item}" aria-haspopup="dialog" aria-controls="trimDetailModal" aria-pressed="${item === state.subTrim}">
+                        <button class="sub-trim-item ${item === state.subTrim ? "active" : ""}" type="button" data-sub-trim="${item}" ${ENABLE_TRIM_DETAIL_POPUP ? 'aria-haspopup="dialog" aria-controls="trimDetailModal"' : ''} aria-pressed="${item === state.subTrim}">
                           <span class="radio-ui ${item === state.subTrim ? "checked" : ""}" aria-hidden="true"></span>
                           <strong>${item}</strong>
                         </button>
@@ -9096,7 +9099,7 @@ function paintSwatchStyle(paint) {
     content.querySelectorAll("[data-engine-model]").forEach(button => {
       button.addEventListener("click", () => {
         // 포르쉐·벤틀리·롤스로이스: 하위 트림 버튼 없이 세부모델을 눌렀을 때 안내 팝업을 엽니다.
-        if (usesDirectModelTrimDetail()) {
+        if (usesDirectModelTrimDetail() && ENABLE_TRIM_DETAIL_POPUP) {
           if (!trimDetailModal) {
             console.error("[오토지니] 트림 팝업 HTML이 없습니다. index.html, css/style.css, js/script.js를 함께 업데이트하세요.");
             showValidation("트림 안내 창을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
@@ -9117,7 +9120,19 @@ function paintSwatchStyle(paint) {
 
     content.querySelectorAll("[data-sub-trim]").forEach(button => {
       button.addEventListener("click", () => {
-        // 팝업에서 확인한 뒤 선택을 확정합니다.
+        // 팝업 OFF이면 선택값을 즉시 확정하고 기존 단계 이동 방식은 유지합니다.
+        if (!ENABLE_TRIM_DETAIL_POPUP) {
+          const selected = button.dataset.subTrim;
+          const modelGroup = currentVehicle()?.detailModels?.find(group => group.name === state.trim);
+          if (!modelGroup?.trims.includes(selected)) return;
+          state.subTrim = selected;
+          render();
+          showValidation("");
+          rememberWizardState();
+          scrollToNextSelection('[data-option-section="sub-trim"]', "start");
+          return;
+        }
+        // 팝업 ON이면 설명을 확인한 뒤 선택을 확정합니다.
         openTrimDetailModal(button.dataset.subTrim);
       });
     });
