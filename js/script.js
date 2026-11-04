@@ -9866,5 +9866,76 @@ function paintSwatchStyle(paint) {
     resetWizardToStart();
   });
 
+  // 차량별 광고 링크: ?car=모델명 또는 ?brand=브랜드명&car=모델명
+  // 외장 색상은 자동 선택하지 않고 고객이 직접 고르도록 유지합니다.
+  function initializeVehicleFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const requestedCar = params.get("car")?.trim();
+    if (!requestedCar) return false;
+
+    const normalizeLinkName = value => String(value || "")
+      .normalize("NFKC")
+      .toLocaleLowerCase("ko-KR")
+      .replace(/[\s\-_·.]/g, "");
+
+    const requestedBrand = normalizeLinkName(params.get("brand"));
+    const targetCar = normalizeLinkName(requestedCar);
+    const candidates = vehicleCatalog
+      .filter(brand => brand.market === "import")
+      .filter(brand => !requestedBrand || normalizeLinkName(brand.name) === requestedBrand)
+      .flatMap(brand => brand.cars
+        .filter(car => normalizeLinkName(car.name) === targetCar)
+        .map(car => ({ brand, car })));
+
+    if (!candidates.length) return false;
+    // 같은 모델명이 여러 브랜드에 있으면 브랜드를 명시하는 주소를 권장합니다.
+    const { brand, car } = candidates[0];
+    state.step = 1;
+    state.market = "import";
+    state.brandName = brand.name;
+    state.carName = car.name;
+    state.paintId = "";
+    resetSelectionsAfterVehicleChange();
+
+    // 최초 진입은 브라우저 뒤로가기에 빈 견적 단계를 추가하지 않습니다.
+    // 뒤로가기로 견적 상태가 복원된 경우에는 해당 상태를 우선합니다.
+    window.history.replaceState(wizardHistoryEntry(wizardHistoryIndex), "", window.location.href);
+    return true;
+  }
+
+  const vehicleLinkSelected = initializeVehicleFromUrl();
   render();
+
+  // 차량별 링크로 진입할 때: 로딩 화면이 사라진 후 색상 선택 칸으로 이동합니다.
+  // 로딩 중 body.loader-active가 스크롤을 막기 때문에 load 직후 이동하면 안 됩니다.
+  function scrollDeepLinkedVehicleToPaint() {
+    const target = content.querySelector('[data-option-section="paint"]');
+    if (!target || !state.carName || state.step !== 1) return;
+
+    const header = document.querySelector(".wizard-header") || document.querySelector(".site-header");
+    const headerHeight = header?.getBoundingClientRect().height || 0;
+    // 색상 영역 위로 차량 이미지의 아래쪽도 일부 보이게 여유를 둡니다.
+    const topOffset = Math.max(headerHeight + 18, Math.min(210, window.innerHeight * 0.24));
+    const destination = window.scrollY + target.getBoundingClientRect().top - topOffset;
+    window.scrollTo({ top: Math.max(0, destination), left: 0, behavior: "auto" });
+  }
+
+  function scheduleDeepLinkedPaintScroll() {
+    const moveAfterLoader = () => {
+      if (document.body.classList.contains("loader-active")) {
+        window.setTimeout(moveAfterLoader, 100);
+        return;
+      }
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(scrollDeepLinkedVehicleToPaint);
+      });
+    };
+    if (document.readyState === "complete") {
+      moveAfterLoader();
+    } else {
+      window.addEventListener("load", moveAfterLoader, { once: true });
+    }
+  }
+
+  if (vehicleLinkSelected) scheduleDeepLinkedPaintScroll();
 })();
