@@ -9731,6 +9731,12 @@ function paintSwatchStyle(paint) {
       initialCostRate: payload.initialCostRate || "",
       annualMileage: payload.annualMileage || "",
       subsidyRegion: payload.subsidyRegion || "",
+      // 수입차 사이트 접속 도메인별 신청출처 구분
+      // 오토지니(importcar) / 구글 광고(icar) / 네이버 배너(nicar)
+      submissionSource: ({
+        "icar.agautoplan.com": "google",
+        "nicar.agautoplan.com": "naver_banner"
+      })[window.location.hostname.toLowerCase()] || "autojini",
       customerName: payload.customerName || "",
       customerPhone: payload.customerPhone || "",
       contactMethod: payload.contactMethod || "",
