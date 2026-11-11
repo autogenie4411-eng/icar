@@ -922,30 +922,6 @@ try {
     throw new Error(`최신 수입차 후기 수집 누락 (${missingLatest.join(', ')}); 기존 JSON은 유지합니다.`);
   }
 
-  // 첫 목록에서 식별된 최신 수입차 후기가 실제 결과에서 누락되면
-  // 이전 JSON을 신규 JSON으로 가장해 게시하지 않습니다.
-  const newestImportIds = items
-    .filter(item => reviewMarket({ title: item.title }) === 'import')
-    .slice(0, 8)
-    .map(item => String(item.id));
-  const resultIds = new Set(unique.map(review => String(review.id)));
-  const missingLatest = newestImportIds.filter(id => !resultIds.has(id));
-  if (missingLatest.length) {
-    throw new Error(`최신 수입차 후기 수집 누락 (${missingLatest.join(', ')}); 기존 JSON은 유지합니다.`);
-  }
-
-  // 첫 목록에서 식별된 최신 수입차 후기가 실제 결과에서 누락되면
-  // 이전 JSON을 신규 JSON으로 가장해 게시하지 않습니다.
-  const newestImportIds = items
-    .filter(item => reviewMarket({ title: item.title }) === 'import')
-    .slice(0, 8)
-    .map(item => String(item.id));
-  const resultIds = new Set(unique.map(review => String(review.id)));
-  const missingLatest = newestImportIds.filter(id => !resultIds.has(id));
-  if (missingLatest.length) {
-    throw new Error(`최신 수입차 후기 수집 누락 (${missingLatest.join(', ')}); 기존 JSON은 유지합니다.`);
-  }
-
   // 아카이브에는 이 사이트에 해당하는 후기만 저장하며, 이전 기록은 신규 수집 시 덮어쓰기하지 않습니다.
   const siteReviews = unique;
 
