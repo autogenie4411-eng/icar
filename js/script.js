@@ -1,0 +1,9987 @@
+(() => {
+  "use strict";
+
+  /* ============================================================
+   * 차량 선택 리스트 할인배지 설정
+   * enabled: true = 표시 / false = 숨김
+   * brand, car: 사이트 차량 리스트에 등록된 이름과 동일하게 입력
+   * amount: 만원 단위 (600 = 600만원)
+   * 같은 차량에 여러 배지를 표시하려면 배열에 항목을 추가하세요.
+   * ============================================================ */
+  const VEHICLE_DISCOUNT_BADGES = [
+    // 현재 할인 차량 없음. 필요하면 아래 예시의 //를 제거하고 값을 수정하세요.
+    // { enabled: true, brand: "BMW", car: "차량리스트의 정확한 이름", amount: 300 },
+  ];
+
+  function renderVehicleDiscountBadges(brand, car) {
+    return VEHICLE_DISCOUNT_BADGES
+      .filter(item => item.enabled === true && item.brand === brand && item.car === car
+        && Number.isFinite(Number(item.amount)) && Number(item.amount) > 0)
+      .map(item => `<span class="vehicle-card-item__promo">차량가 최대 ${Number(item.amount).toLocaleString("ko-KR")}만원 할인</span>`)
+      .join("");
+  }
+
+
+  // 트림 설명 팝업 ON/OFF: true = 사용, false = 미사용 (선택 즉시 적용)
+  const ENABLE_TRIM_DETAIL_POPUP = false;
+
+  const currentMonth = new Date().getMonth() + 1;
+
+  // 현재 월은 화면 렌더링 시마다 계산합니다.
+  // 탭을 오래 열어둔 상태에서 월이 바뀌어도 월별 할인 표시를 갱신합니다.
+  function getCurrentDiscountMonth() {
+    return new Date().getMonth() + 1;
+  }
+
+  function syncDisplayedDiscountMonths() {
+    const label = `${getCurrentDiscountMonth()}월 할인율`;
+
+    document.querySelectorAll(".monthly-discount-sticker").forEach((sticker) => {
+      const monthElement = sticker.querySelector(".monthly-discount-sticker__month");
+      if (monthElement) {
+        monthElement.textContent = label;
+      }
+
+      const rate = sticker.querySelector(".monthly-discount-sticker__rate")?.textContent?.trim();
+      if (rate) {
+        sticker.setAttribute("aria-label", `${label} 최대 ${rate}`);
+      }
+    });
+
+    document.querySelectorAll(".discount-rate dt").forEach((element) => {
+      element.textContent = label;
+    });
+  }
+
+  // 휴면 탭 복귀/브라우저 뒤로가기로 돌아오는 경우에도 최신 월을 표시합니다.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      syncDisplayedDiscountMonths();
+    }
+  });
+  window.addEventListener("pageshow", syncDisplayedDiscountMonths);
+
+  // 페이지를 계속 열어둔 경우에는 매분 확인합니다.
+  window.setInterval(() => {
+    if (!document.hidden) {
+      syncDisplayedDiscountMonths();
+    }
+  }, 60 * 1000);
+
+
+
+  function resetPageScroll() {
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }
+
+  if ("scrollRestoration" in history) {
+    history.scrollRestoration = "manual";
+  }
+
+  // 초기 진입 시에만 한 번 맨 위에서 시작합니다.
+  // load/pageshow 이후에는 사용자가 이미 선택하거나 스크롤했을 수 있으므로
+  // 스크롤 위치를 다시 0으로 변경하지 않습니다.
+  resetPageScroll();
+
+  // 프로젝트 폴더가 어느 경로로 이동해도 에셋을 script.js 위치 기준으로 찾습니다.
+  const scriptElement = document.currentScript;
+  const scriptUrl = new URL(scriptElement?.src || "js/script.js", document.baseURI);
+  const projectRootUrl = new URL("../", scriptUrl);
+
+  function assetUrl(relativePath) {
+    if (!relativePath) return "";
+
+    try {
+      return new URL(relativePath, projectRootUrl).href;
+    } catch (error) {
+      console.warn("에셋 경로를 해석하지 못했습니다.", relativePath, error);
+      return relativePath;
+    }
+  }
+  // URL 전용 진입은 로더 뒤에서 원하는 위치를 미리 완성합니다.
+  let deepLinkedVehicleReady = false;
+  const landingLoader = document.getElementById("landingLoader");
+  if (landingLoader) {
+    document.body.classList.add("loader-active");
+
+    window.setTimeout(() => {
+      if (deepLinkedVehicleReady) {
+        // 로딩 커버가 아직 보이는 동안 스크롤 잠금을 풀고 즉시 위치를 맞춥니다.
+        // 커버가 사라진 다음 스크롤하는 방식은 눈에 보이는 화면 이동을 유발합니다.
+        document.body.classList.remove("loader-active");
+        // 로더를 완전히 덮어둔 상태에서 실제 스크롤 좌표부터 맞춥니다.
+        scrollDeepLinkedVehicleToCard();
+        window.requestAnimationFrame(() => {
+          // 스크롤 잠금 해제 후 브라우저 레이아웃 변경까지 반영합니다.
+          scrollDeepLinkedVehicleToCard();
+          window.requestAnimationFrame(() => {
+            scrollDeepLinkedVehicleToCard();
+            // 위치 조정이 끝난 다음에만 로더를 제거합니다.
+            landingLoader.remove();
+          });
+        });
+      } else {
+        landingLoader.setAttribute("aria-hidden", "true");
+      }
+
+      window.setTimeout(() => {
+        document.body.classList.remove("loader-active");
+        landingLoader.remove();
+      }, 400);
+    }, 3000);
+  }
+
+
+/* =========================================================
+   차량별 세부모델 직접 수정 방법
+   각 차량의 detailModels만 수정하면 STEP 02 목록이 달라집니다.
+
+   예시:
+   "detailModels": [
+     { "name": "2.5 가솔린", "trims": ["프리미엄", "익스클루시브", "캘리그래피"] },
+     { "name": "3.5 가솔린", "trims": ["프리미엄", "익스클루시브"] }
+   ]
+
+   name  : 큰 세부모델 버튼명
+   trims : 해당 세부모델을 눌렀을 때 표시되는 하위 트림 목록
+========================================================= */
+const vehicleCatalog = [
+  {
+    "name": "BMW",
+    "short": "BMW",
+    "market": "import",
+    "ownBackground": false,
+    "cars": [
+      
+      {
+        "name": "1시리즈",
+        "detailModels": [
+          {
+            "name": "120",
+            "trims": [
+              "Base",
+              "M Sport"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0182",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/1시리즈-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0183",
+            "name": "스카이스크래퍼 그레이 메탈릭",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/1시리즈-스카이스크래퍼 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0184",
+            "name": "알파인 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/1시리즈-알파인 화이트.webp"
+          },
+          {
+            "id": "paint-add-0185",
+            "name": "케이프 요크 그린 메탈릭",
+            "hex": "#6F898D",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/1시리즈-케이프 요크 그린 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "2시리즈",
+        "detailModels": [
+          {
+            "name": "220",
+            "trims": [
+              "M Sport Design",
+              "M Sport"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0186",
+            "name": "M 브루클린 그레이 메탈릭",
+            "hex": "#B8B9BD",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/2시리즈-M 브루클린 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0187",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/2시리즈-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0188",
+            "name": "스카이스크래퍼 그레이 메탈릭",
+            "hex": "#62635E",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/2시리즈-스카이스크래퍼 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0189",
+            "name": "썬더나이트 메탈릭",
+            "hex": "#624F71",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/2시리즈-썬더나이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0190",
+            "name": "알파인 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/2시리즈-알파인 화이트.webp"
+          }
+        ]
+      },
+      {
+        "name": "3시리즈",
+        "detailModels": [
+          {
+            "name": "320i",
+            "trims": [
+              "A/T",
+              "M Sport",
+              "M Sport Pro Special Edition",
+              "M Sport M Performance Parts Edition"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-1",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/3시리즈-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-2",
+            "name": "스카이스크래퍼 그레이 메탈릭",
+            "hex": "#7e858d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/3시리즈-스카이스크래퍼 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-3",
+            "name": "아크틱 레이스 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/3시리즈-아크틱 레이스 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-4",
+            "name": "알파인 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/3시리즈-알파인 화이트.webp"
+          }
+        ]
+      },
+      {
+        "name": "4시리즈",
+        "detailModels": [
+          {
+            "name": "420i",
+            "trims": [
+              "M Sport Pro Package"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0191",
+            "name": "M 브루클린 그레이 메탈릭",
+            "hex": "#9FA3A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/4시리즈-M 브루클린 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0192",
+            "name": "M 포티마오 브루 메탈릭",
+            "hex": "#253A88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/4시리즈-M 포티마오 브루 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0193",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/4시리즈-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0194",
+            "name": "알파인 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/4시리즈-알파인 화이트.webp"
+          },
+          {
+            "id": "paint-add-0195",
+            "name": "케이프 요크 그린 메탈릭",
+            "hex": "#6F898D",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/4시리즈-케이프 요크 그린 메탈릭.webp"
+          }
+        ]
+      },
+            {
+        "name": "5시리즈",
+        "detailModels": [
+          {
+            "name": "520i",
+            "trims": [
+              "A/T",
+              "M Sport"
+            ]
+          },
+          {
+            "name": "530i",
+            "trims": [
+              "A/T",
+              "M Sport"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-5",
+            "name": "M 브루클린 그레이 메탈릭",
+            "hex": "#7e858d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/5시리즈-M 브루클린 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-6",
+            "name": "M 카본 블랙 메탈릭",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/5시리즈-M 카본 블랙 메탈릭.webp"
+          },
+          {
+            "id": "paint-7",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/5시리즈-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-8",
+            "name": "소피스토 그레이 메탈릭",
+            "hex": "#565754",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/5시리즈-소피스토 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-9",
+            "name": "알파인 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/5시리즈-알파인 화이트.webp"
+          },
+          {
+            "id": "paint-10",
+            "name": "옥사이드 그레이 메탈릭",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/5시리즈-옥사이드 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-11",
+            "name": "케이프 요크 그린 메탈릭",
+            "hex": "#6F898D",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/5시리즈-케이프 요크 그린 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "7시리즈",
+        "detailModels": [
+          {
+            "name": "740d",
+            "trims": [
+              "M Sport Black",
+              "M Sport"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0196",
+            "name": "M 브루클린 그레이 메탈릭",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/7시리즈-M 브루클린 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0197",
+            "name": "미네랄 화이트 메탈릭",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/7시리즈-미네랄 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0198",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/7시리즈-블랙 사파이어 메탈릭.webp"
+          }
+          ,
+          {
+            "id": "paint-bmw-7-oxide-gray",
+            "name": "옥사이드 그레이 메탈릭",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/7시리즈-옥사이드 그레이 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "8시리즈",
+        "detailModels": [
+          {
+            "name": "M850i xDrive",
+            "trims": [
+              "M Performance"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0199",
+            "name": "미네랄 화이트 메탈릭",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/8시리즈-미네랄 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0200",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/8시리즈-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0201",
+            "name": "산레모 그린 메탈릭",
+            "hex": "#0D330B",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/8시리즈-산레모 그린 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0202",
+            "name": "스카이스크래퍼 그레이 메탈릭",
+            "hex": "#797C76",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/8시리즈-스카이스크래퍼 그레이 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "i4",
+        "detailModels": [
+          {
+            "name": "M60 xDrive",
+            "trims": [
+              "A/T",
+              "Pro"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0203",
+            "name": "M 브루클린 그레이 메탈릭",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/i4-M 브루클린 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0204",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/i4-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0205",
+            "name": "알파인 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/i4-알파인 화이트.webp"
+          },
+          {
+            "id": "paint-add-0206",
+            "name": "케이프 요크 그린 메탈릭",
+            "hex": "#6F898D",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/i4-케이프 요크 그린 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0207",
+            "name": "포티마오 블루 메탈릭",
+            "hex": "#172D77",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/i4-포티마오 블루 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "i5",
+        "detailModels": [
+          {
+            "name": "eDrive40",
+            "trims": [
+              "A/T",
+              "M Sport"
+            ]
+          },
+          {
+            "name": "xDrive40",
+            "trims": [
+              "M Sport Package"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0208",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/i5-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0209",
+            "name": "소피스토 그레이 메탈릭",
+            "hex": "#4A4B49",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/i5-소피스토 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0210",
+            "name": "알파인 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/i5-알파인 화이트.webp"
+          },
+          {
+            "id": "paint-add-0211",
+            "name": "옥사이드 그레이 메탈릭",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/i5-옥사이드 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0212",
+            "name": "케이프 요크 그린 메탈릭",
+            "hex": "#6F898D",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/i5-케이프 요크 그린 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "i7",
+        "detailModels": [
+          {
+            "name": "M70 xDrive",
+            "trims": [
+              "M performance"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0213",
+            "name": "미네랄 화이트 메탈릭",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/i7-미네랄 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0214",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/i7-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0215",
+            "name": "소피스토 그레이 브릴리언트 이펙트",
+            "hex": "#2D2D2D",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/i7-소피스토 그레이 브릴리언트 이펙트.webp"
+          },
+          {
+            "id": "paint-add-0216",
+            "name": "옥사이드 그레이 메탈릭",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/i7-옥사이드 그레이 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "iX1",
+        "detailModels": [
+          {
+            "name": "eDrive20",
+            "trims": [
+              "xLine"
+            ]
+          },
+          {
+            "name": "xDrive30",
+            "trims": [
+              "xLine",
+              "M Sport"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0217",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/iX1-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0218",
+            "name": "스페이스 실버 메탈릭",
+            "hex": "#757777",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/iX1-스페이스 실버 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0219",
+            "name": "알파인 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/iX1-알파인 화이트.webp"
+          },
+          {
+            "id": "paint-add-0220",
+            "name": "케이프 요크 그린 메탈릭",
+            "hex": "#6F898D",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/iX1-케이프 요크 그린 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "iX2",
+        "detailModels": [
+          {
+            "name": "eDrive20",
+            "trims": [
+              "M Sport"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0221",
+            "name": "M 브루클린 그레이 메탈릭",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/iX2-M 브루클린 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0222",
+            "name": "M 포티마오 블루 메탈릭",
+            "hex": "#1E305A",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/iX2-M 포티마오 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0223",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/iX2-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0224",
+            "name": "알파인 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/iX2-알파인 화이트.webp"
+          },
+          {
+            "id": "paint-add-0225",
+            "name": "케이프 요크 그린 메탈릭",
+            "hex": "#6F898D",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/iX2-케이프 요크 그린 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "iX3",
+        "detailModels": [
+          {
+            "name": "50 xDrive",
+            "trims": [
+              "SE",
+              "M Sport"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0226",
+            "name": "M 브루클린 그레이 메탈릭",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/iX3-M 브루클린 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0227",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/iX3-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0228",
+            "name": "알파인 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/iX3-알파인 화이트.webp"
+          },
+          {
+            "id": "paint-add-0229",
+            "name": "오션 웨이브 블루 메탈릭",
+            "hex": "#414F6A",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/iX3-오션 웨이브 블루 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "IX",
+        "detailModels": [
+          {
+            "name": "xDrive45",
+            "trims": [
+              "M Sport Package"
+            ]
+          },
+          {
+            "name": "xDrive60",
+            "trims": [
+              "M Sport Pro Package"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0230",
+            "name": "M 카본 블랙 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/iX-M 카본 블랙 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0231",
+            "name": "듄 그레이 메탈릭",
+            "hex": "#C4C1B9",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/iX-듄 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0232",
+            "name": "미네랄 화이트 메탈릭",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/iX-미네랄 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0233",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/iX-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0234",
+            "name": "아틱 레이스 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/iX-아틱 레이스 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0235",
+            "name": "어벤츄린 레드 메탈릭",
+            "hex": "#9b3038",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/iX-어벤츄린 레드 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "X1",
+        "detailModels": [
+          {
+            "name": "sDrive18d",
+            "trims": [
+              "xLine",
+              "M Sport"
+            ]
+          },
+          {
+            "name": "xDrive20i",
+            "trims": [
+              "xLine",
+              "M Sport"
+            ]
+          },
+          {
+            "name": "M35i xDrive",
+            "trims": [
+              "A/T"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0236",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X1-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0237",
+            "name": "알파인 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X1-알파인 화이트.webp"
+          },
+          {
+            "id": "paint-add-0238",
+            "name": "케이프 요크 그린 메탈릭",
+            "hex": "#6F898D",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X1-케이프 요크 그린 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "X2",
+        "detailModels": [
+          {
+            "name": "xDrive20i",
+            "trims": [
+              "M Sport Package"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0239",
+            "name": "M 브루클린 그레이 메탈릭",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X2-M 브루클린 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0240",
+            "name": "M 포티마오 블루 메탈릭",
+            "hex": "#1E305D",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X2-M 포티마오 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0241",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X2-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0242",
+            "name": "알파인 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X2-알파인 화이트.webp"
+          },
+          {
+            "id": "paint-add-0243",
+            "name": "파이어 레드 메탈릭",
+            "hex": "#9b3038",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X2-파이어 레드 메탈릭.webp"
+          }
+        ]
+      },
+         {
+        "name": "X3",
+        "detailModels": [
+          {
+            "name": "20 xDrive",
+            "trims": [
+              "A/T",
+              "M Sport",
+              "M Sport Pro"
+            ]
+          },
+          {
+            "name": "20d xDrive",
+            "trims": [
+              "A/T",
+              "M Sport"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-12",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X3-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-13",
+            "name": "스카이스크래퍼 그레이 메탈릭",
+            "hex": "#7e858d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X3-스카이스크래퍼 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-14",
+            "name": "아틱 레이스 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X3-아틱 레이스 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-15",
+            "name": "알파인 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X3-알파인 화이트.webp"
+          }
+        ]
+      },
+      {
+        "name": "X4",
+        "detailModels": [
+          {
+            "name": "xDrive20i",
+            "trims": [
+              "xLine",
+              "M Sport",
+              "M Sport Pro"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0244",
+            "name": "M 브루클린 그레이 메탈릭",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X4-M 브루클린 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0245",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X4-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0246",
+            "name": "소피스토 그레이 브릴리언트 이펙트",
+            "hex": "#433F3B",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X4-소피스토 그레이 브릴리언트 이펙트.webp"
+          },
+          {
+            "id": "paint-add-0247",
+            "name": "알파인 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X4-알파인 화이트.webp"
+          },
+          {
+            "id": "paint-add-0248",
+            "name": "파이토닉 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X4-파이토닉 블루 메탈릭.webp"
+          }
+        ]
+      },
+            {
+        "name": "X5",
+        "detailModels": [
+          {
+            "name": "xDrive30d",
+            "trims": [
+              "xLine (7인승)"
+            ]
+          },
+          {
+            "name": "xDrive40i",
+            "trims": [
+              "xLine (7인승)"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-16",
+            "name": "맨해튼 메탈릭",
+            "hex": "#626159",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X5-맨해튼 메탈릭.webp"
+          },
+          {
+            "id": "paint-17",
+            "name": "미네랄 화이트 메탈릭",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X5-미네랄 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-18",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X5-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-19",
+            "name": "스카이스크레이퍼 그레이 메탈릭",
+            "hex": "#7e858d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X5-스카이스크레이퍼 그레이 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "X6",
+        "detailModels": [
+          {
+            "name": "xDrive30d",
+            "trims": [
+              "M Sport"
+            ]
+          },
+          {
+            "name": "xDrive40i",
+            "trims": [
+              "M Sport"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0249",
+            "name": "M 브루클린 그레이 메탈릭",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X6-M 브루클린 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0250",
+            "name": "맨해탄 메탈릭",
+            "hex": "#626159",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X6-맨해탄 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0251",
+            "name": "미네랄 화이트 메탈릭",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X6-미네랄 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0252",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X6-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0253",
+            "name": "스카이스크래퍼 그레이 메탈릭",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X6-스카이스크래퍼 그레이 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "X7",
+        "detailModels": [
+          {
+            "name": "xDrive40d",
+            "trims": [
+              "M Sport (7인승)"
+            ]
+          },
+          {
+            "name": "xDrive40i",
+            "trims": [
+              "M Sport (7인승)"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0254",
+            "name": "맨해탄 메탈릭",
+            "hex": "#626159",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X7-맨해탄 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0255",
+            "name": "미네랄 화이트 메탈릭",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X7-미네랄 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0256",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X7-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0257",
+            "name": "스카이스크래퍼 그레이 메탈릭",
+            "hex": "#4D534C",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/X7-스카이스크래퍼 그레이 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "XM",
+        "detailModels": [
+          {
+            "name": "XM Label",
+            "trims": [
+              "A/T",
+              "상위형"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0258",
+            "name": "BMW 인디비주얼 드라빗 그레이 메탈릭",
+            "hex": "#444744",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/XM-BMW 인디비주얼 드라빗 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0259",
+            "name": "미네랄 화이트 메탈릭",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/XM-미네랄 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0260",
+            "name": "블랙 사파이어 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/XM-블랙 사파이어 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0261",
+            "name": "케이프 요크 그린 메탈릭",
+            "hex": "#6F898D",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/BMW/XM-케이프 요크 그린 메탈릭.webp"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "벤츠",
+    "short": "MERCEDES-BENZ",
+    "market": "import",
+    "ownBackground": false,
+    "cars": [
+      {
+        "name": "A클래스 해치백",
+        "detailModels": [
+          {
+            "name": "A 220",
+            "trims": [
+              "DCT"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0001",
+            "name": "MANUFAKTUR 마운틴 그레이 마그노",
+            "hex": "#494C4B",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/A클래스 해치백-MANUFAKTUR 마운틴 그레이 마그노.webp"
+          },
+          {
+            "id": "paint-add-0002",
+            "name": "마운틴 그레이 메탈릭",
+            "hex": "#535655",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/A클래스 해치백-마운틴 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0003",
+            "name": "제트 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/A클래스 해치백-제트 블랙.webp"
+          },
+          {
+            "id": "paint-add-0004",
+            "name": "코스모스 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/A클래스 해치백-코스모스 블랙.webp"
+          },
+          {
+            "id": "paint-add-0005",
+            "name": "폴라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/A클래스 해치백-폴라 화이트.webp"
+          },
+          {
+            "id": "paint-add-0006",
+            "name": "하이 테크 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/A클래스 해치백-하이 테크 실버.webp"
+          }
+        ]
+      },
+      {
+        "name": "C클래스 아방가르드",
+        "detailModels": [
+          {
+            "name": "C 200",
+            "trims": [
+              "Avantgarde"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-benz-cclass-avantgarde-graphite-grey",
+            "name": "그라파이트 그레이",
+            "hex": "#646464",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/C클래스 아방가르드-그라파이트 그레이.webp"
+          },
+          {
+            "id": "paint-benz-cclass-avantgarde-black",
+            "name": "블랙",
+            "hex": "#111214",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/C클래스 아방가르드-블랙.webp"
+          },
+          {
+            "id": "paint-benz-cclass-avantgarde-selenite-grey",
+            "name": "셀레나이트 그레이",
+            "hex": "#666a6a",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/C클래스 아방가르드-셀레나이트 그레이.webp"
+          },
+          {
+            "id": "paint-benz-cclass-avantgarde-sodalite-blue",
+            "name": "소다라이트 블루",
+            "hex": "#5a5e6a",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/C클래스 아방가르드-소다라이트 블루.webp"
+          },
+          {
+            "id": "paint-benz-cclass-avantgarde-spectral-blue",
+            "name": "스펙트럴 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/C클래스 아방가르드-스펙트럴 블루.webp"
+          },
+          {
+            "id": "paint-benz-cclass-avantgarde-obsidian-black",
+            "name": "옵시디안 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/C클래스 아방가르드-옵시디안 블랙.webp"
+          },
+          {
+            "id": "paint-benz-cclass-avantgarde-polar-white",
+            "name": "폴라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/C클래스 아방가르드-폴라 화이트.webp"
+          },
+          {
+            "id": "paint-benz-cclass-avantgarde-high-tech-silver",
+            "name": "하이 테크 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/C클래스 아방가르드-하이 테크 실버.webp"
+          },
+          {
+            "id": "paint-benz-cclass-avantgarde-manufaktur-graphite-grey-magno",
+            "name": "MANUFAKTUR 그라파이트 그레이 마그노",
+            "hex": "#484848",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/C클래스 아방가르드-MANUFAKTUR 그라파이트 그레이 마그노.webp"
+          },
+          {
+            "id": "paint-benz-cclass-avantgarde-manufaktur-alpine-grey-solid",
+            "name": "MANUFAKTUR 알파인 그레이 솔리드",
+            "hex": "#949494",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/C클래스 아방가르드-MANUFAKTUR 알파인 그레이 솔리드.webp"
+          }
+        ]
+      },
+      {
+        "name": "E클래스 아방가르드",
+        "detailModels": [
+          {
+            "name": "E 200",
+            "trims": [
+              "Avantgarde"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-benz-e-avantgarde-graphite-grey",
+            "name": "그라파이트 그레이",
+            "hex": "#5f656b",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/E클래스 아방가르드-그라파이트 그레이.webp"
+          },
+          {
+            "id": "paint-benz-e-avantgarde-nautic-blue",
+            "name": "노틱 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/E클래스 아방가르드-노틱 블루.webp"
+          },
+          {
+            "id": "paint-benz-e-avantgarde-verde-silver",
+            "name": "베르데 실버",
+            "hex": "#728C85",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/E클래스 아방가르드-베르데 실버.webp"
+          },
+          {
+            "id": "paint-benz-e-avantgarde-velvet-brown",
+            "name": "벨벳 브라운",
+            "hex": "#755548",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/E클래스 아방가르드-벨벳 브라운.webp"
+          },
+          {
+            "id": "paint-benz-e-avantgarde-obsidian-black",
+            "name": "옵시디안 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/E클래스 아방가르드-옵시디안 블랙.webp"
+          },
+          {
+            "id": "paint-benz-e-avantgarde-polar-white",
+            "name": "폴라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/E클래스 아방가르드-폴라 화이트.webp"
+          },
+          {
+            "id": "paint-benz-e-avantgarde-high-tech-silver",
+            "name": "하이 테크 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/E클래스 아방가르드-하이 테크 실버.webp"
+          },
+          {
+            "id": "paint-benz-e-avantgarde-manufaktur-alpine-grey",
+            "name": "MANUFAKTUR 알파인 그레이",
+            "hex": "#929393",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/E클래스 아방가르드-MANUFAKTUR 알파인 그레이.webp"
+          },
+          {
+            "id": "paint-benz-e-avantgarde-manufaktur-opalite-white-bright",
+            "name": "MANUFAKTUR 오팔라이트 화이트 브라이트",
+            "hex": "#ececea",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/E클래스 아방가르드-MANUFAKTUR 오팔라이트 화이트 브라이트.webp"
+          },
+          {
+            "id": "paint-benz-e-avantgarde-manufaktur-patagonia-red-bright",
+            "name": "MANUFAKTUR 파타고니아 레드 브라이트",
+            "hex": "#a92b31",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/E클래스 아방가르드-MANUFAKTUR 파타고니아 레드 브라이트.webp"
+          }
+        ]
+      },
+     {
+        "name": "E클래스 익스클루시브",
+        "detailModels": [
+          {
+            "name": "E 300 4MATIC",
+            "trims": [
+              "Exclusive"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-benz-e-exclusive-graphite-grey",
+            "name": "그라파이트 그레이",
+            "hex": "#5f656b",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/E클래스 익스클루시브-그라파이트 그레이.webp"
+          },
+          {
+            "id": "paint-benz-e-exclusive-nautic-blue",
+            "name": "노틱 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/E클래스 익스클루시브-노틱 블루.webp"
+          },
+          {
+            "id": "paint-benz-e-exclusive-verde-silver",
+            "name": "베르데 실버",
+            "hex": "#728C85",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/E클래스 익스클루시브-베르데 실버.webp"
+          },
+          {
+            "id": "paint-benz-e-exclusive-velvet-brown",
+            "name": "벨벳 브라운",
+            "hex": "#755548",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/E클래스 익스클루시브-벨벳 브라운.webp"
+          },
+          {
+            "id": "paint-benz-e-exclusive-obsidian-black",
+            "name": "옵시디안 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/E클래스 익스클루시브-옵시디안 블랙.webp"
+          },
+          {
+            "id": "paint-benz-e-exclusive-polar-white",
+            "name": "폴라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/E클래스 익스클루시브-폴라 화이트.webp"
+          },
+          {
+            "id": "paint-benz-e-exclusive-high-tech-silver",
+            "name": "하이 테크 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/E클래스 익스클루시브-하이 테크 실버.webp"
+          },
+          {
+            "id": "paint-benz-e-exclusive-manufaktur-alpine-grey",
+            "name": "MANUFAKTUR 알파인 그레이",
+            "hex": "#929393",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/E클래스 익스클루시브-MANUFAKTUR 알파인 그레이.webp"
+          },
+          {
+            "id": "paint-benz-e-exclusive-manufaktur-opalite-white-bright",
+            "name": "MANUFAKTUR 오팔라이트 화이트 브라이트",
+            "hex": "#ececea",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/E클래스 익스클루시브-MANUFAKTUR 오팔라이트 화이트 브라이트.webp"
+          },
+          {
+            "id": "paint-benz-e-exclusive-manufaktur-patagonia-red-bright",
+            "name": "MANUFAKTUR 파타고니아 레드 브라이트",
+            "hex": "#a92b31",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/E클래스 익스클루시브-MANUFAKTUR 파타고니아 레드 브라이트.webp"
+          }
+        ]
+      },
+      {
+        "name": "S클래스",
+        "detailModels": [
+          {
+            "name": "S 350d 4MATIC",
+            "trims": [
+              "A/T"
+            ]
+          },
+          {
+            "name": "S 450 4MATIC",
+            "trims": [
+              "A/T"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-benz-sclass-graphite-grey",
+            "name": "그라파이트 그레이",
+            "hex": "#5f656b",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/S클래스-그라파이트 그레이.webp"
+          },
+          {
+            "id": "paint-benz-sclass-nautic-blue",
+            "name": "노틱 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/S클래스-노틱 블루.webp"
+          },
+          {
+            "id": "paint-benz-sclass-verde-silver",
+            "name": "베르데 실버",
+            "hex": "#a8b3ad",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/S클래스-베르데 실버.webp"
+          },
+          {
+            "id": "paint-benz-sclass-velvet-brown",
+            "name": "벨벳 브라운",
+            "hex": "#755548",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/S클래스-벨벳 브라운.webp"
+          },
+          {
+            "id": "paint-benz-sclass-black",
+            "name": "블랙",
+            "hex": "#111214",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/S클래스-블랙.webp"
+          },
+          {
+            "id": "paint-benz-sclass-emerald-green",
+            "name": "에메랄드 그린",
+            "hex": "#314f43",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/S클래스-에메랄드 그린.webp"
+          },
+          {
+            "id": "paint-benz-sclass-obsidian-black",
+            "name": "옵시디안 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/S클래스-옵시디안 블랙.webp"
+          },
+          {
+            "id": "paint-benz-sclass-warm-grey",
+            "name": "웜 그레이",
+            "hex": "#827f79",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/S클래스-웜 그레이.webp"
+          },
+          {
+            "id": "paint-benz-sclass-high-tech-silver",
+            "name": "하이 테크 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/S클래스-하이 테크 실버.webp"
+          },
+          {
+            "id": "paint-benz-sclass-manufaktur-opalite-white-bright",
+            "name": "MANUFAKTUR 오팔라이트 화이트 브라이트",
+            "hex": "#ececea",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/S클래스-MANUFAKTUR 오팔라이트 화이트 브라이트.webp"
+          },
+          {
+            "id": "paint-benz-sclass-manufaktur-kalahari-gold",
+            "name": "MANUFAKTUR 칼라하리 골드",
+            "hex": "#a88a58",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/S클래스-MANUFAKTUR 칼라하리 골드.webp"
+          },
+          {
+            "id": "paint-benz-sclass-manufaktur-patagonia-red",
+            "name": "MANUFAKTUR 파타고니아 레드",
+            "hex": "#8f3035",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/S클래스-MANUFAKTUR 파타고니아 레드.webp"
+          }
+        ]
+      },
+      {
+        "name": "G클래스",
+        "detailModels": [
+          {
+            "name": "G 450d 4MATIC",
+            "trims": [
+              "A/T",
+              "Manufaktur"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-benz-gclass-magnetite-black",
+            "name": "마그네타이트 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-마그네타이트 블랙.webp"
+          },
+          {
+            "id": "paint-benz-gclass-mojave-silver",
+            "name": "모하비 실버",
+            "hex": "#b1aaa0",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-모하비 실버.webp"
+          },
+          {
+            "id": "paint-benz-gclass-brilliant-blue",
+            "name": "브릴리안트 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-브릴리안트 블루.webp"
+          },
+          {
+            "id": "paint-benz-gclass-black",
+            "name": "블랙",
+            "hex": "#111214",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-블랙.webp"
+          },
+          {
+            "id": "paint-benz-gclass-selenite-grey",
+            "name": "셀레나이트 그레이",
+            "hex": "#666a6a",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-셀레나이트 그레이.webp"
+          },
+          {
+            "id": "paint-benz-gclass-sodalite-blue",
+            "name": "소달라이트 블루",
+            "hex": "#465b73",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-소달라이트 블루.webp"
+          },
+          {
+            "id": "paint-benz-gclass-emerald-green",
+            "name": "에메랄드 그린",
+            "hex": "#314f43",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-에메랄드 그린.webp"
+          },
+          {
+            "id": "paint-benz-gclass-obsidian-black",
+            "name": "옵시디안 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-옵시디안 블랙.webp"
+          },
+          {
+            "id": "paint-benz-gclass-iridium-silver",
+            "name": "이리디움 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-이리디움 실버.webp"
+          },
+          {
+            "id": "paint-benz-gclass-polar-white",
+            "name": "폴라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-폴라 화이트.webp"
+          },
+          {
+            "id": "paint-benz-gclass-manufaktur-night-black-magno",
+            "name": "G manufaktur 나이트 블랙 마그노",
+            "hex": "#242526",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-G manufaktur 나이트 블랙 마그노.webp"
+          },
+          {
+            "id": "paint-benz-gclass-manufaktur-graphite-metallic",
+            "name": "MANUFAKTUR 그라파이트 메탈릭",
+            "hex": "#5f656b",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-MANUFAKTUR 그라파이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-benz-gclass-manufaktur-dark-blue-non-metallic",
+            "name": "MANUFAKTUR 다크 블루 논-메탈릭",
+            "hex": "#26384d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-MANUFAKTUR 다크 블루 논-메탈릭.webp"
+          },
+          {
+            "id": "paint-benz-gclass-manufaktur-desert-sand-non-metallic",
+            "name": "MANUFAKTUR 데저트 샌드 논-메탈릭",
+            "hex": "#c1a77d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-MANUFAKTUR 데저트 샌드 논-메탈릭.webp"
+          },
+          {
+            "id": "paint-benz-gclass-manufaktur-deep-green-non-metallic",
+            "name": "MANUFAKTUR 딥 그린 논-메탈릭",
+            "hex": "#304438",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-MANUFAKTUR 딥 그린 논-메탈릭.webp"
+          },
+          {
+            "id": "paint-benz-gclass-manufaktur-rubellite-red-metallic",
+            "name": "MANUFAKTUR 루벨라이트 레드 메탈릭",
+            "hex": "#7f3439",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-MANUFAKTUR 루벨라이트 레드 메탈릭.webp"
+          },
+          {
+            "id": "paint-benz-gclass-manufaktur-vintage-blue-non-metallic",
+            "name": "MANUFAKTUR 빈티지 블루 논-메탈릭",
+            "hex": "#53697a",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-MANUFAKTUR 빈티지 블루 논-메탈릭.webp"
+          },
+          {
+            "id": "paint-benz-gclass-manufaktur-south-sea-blue-metallic",
+            "name": "MANUFAKTUR 사우스 씨 블루 메탈릭",
+            "hex": "#276c85",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-MANUFAKTUR 사우스 씨 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-benz-gclass-manufaktur-sun-yellow-non-metallic",
+            "name": "MANUFAKTUR 썬 옐로우 논-메탈릭",
+            "hex": "#d5aa39",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-MANUFAKTUR 썬 옐로우 논-메탈릭.webp"
+          },
+          {
+            "id": "paint-benz-gclass-manufaktur-ocean-blue-metallic",
+            "name": "MANUFAKTUR 오션 블루 메탈릭",
+            "hex": "#2e526f",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-MANUFAKTUR 오션 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-benz-gclass-manufaktur-opalite-white-magno",
+            "name": "MANUFAKTUR 오팔라이트 화이트 마그노",
+            "hex": "#dddcd7",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-MANUFAKTUR 오팔라이트 화이트 마그노.webp"
+          },
+          {
+            "id": "paint-benz-gclass-manufaktur-opalite-white-bright",
+            "name": "MANUFAKTUR 오팔라이트 화이트 브라이트",
+            "hex": "#ececea",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-MANUFAKTUR 오팔라이트 화이트 브라이트.webp"
+          },
+          {
+            "id": "paint-benz-gclass-manufaktur-olive-metallic",
+            "name": "MANUFAKTUR 올리브 메탈릭",
+            "hex": "#686c53",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-MANUFAKTUR 올리브 메탈릭.webp"
+          },
+          {
+            "id": "paint-benz-gclass-manufaktur-indium-grey-metallic",
+            "name": "MANUFAKTUR 인디움 그레이 메탈릭",
+            "hex": "#797d7e",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-MANUFAKTUR 인디움 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-benz-gclass-manufaktur-classic-grey-non-metallic",
+            "name": "MANUFAKTUR 클래식 그레이 논-메탈릭",
+            "hex": "#858786",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-MANUFAKTUR 클래식 그레이 논-메탈릭.webp"
+          },
+          {
+            "id": "paint-benz-gclass-manufaktur-travertine-beige-metallic",
+            "name": "MANUFAKTUR 트레벌타인 베이지 메탈릭",
+            "hex": "#a9987d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-MANUFAKTUR 트레벌타인 베이지 메탈릭.webp"
+          },
+          {
+            "id": "paint-benz-gclass-manufaktur-hyacinth-red-metallic",
+            "name": "MANUFAKTUR 하이신스 레드 메탈릭",
+            "hex": "#9a2f34",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/G클래스-MANUFAKTUR 하이신스 레드 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "AMG SL 로드스터",
+        "detailModels": [
+          {
+            "name": "SL 43 AMG",
+            "trims": [
+              "A/T"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0042",
+            "name": "AMG 몬자 그레이 마그노",
+            "hex": "#373230",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG SL 로드스터-AMG 몬자 그레이 마그노.webp"
+          },
+          {
+            "id": "paint-add-0043",
+            "name": "MANUFAKTUR 그라파이트 그레이 마그노",
+            "hex": "#363938",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG SL 로드스터-MANUFAKTUR 그라파이트 그레이 마그노.webp"
+          },
+          {
+            "id": "paint-add-0044",
+            "name": "MANUFAKTUR 나이트 블랙 마그노",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG SL 로드스터-MANUFAKTUR 나이트 블랙 마그노.webp"
+          },
+          {
+            "id": "paint-add-0045",
+            "name": "MANUFAKTUR 루벨라이트 레드",
+            "hex": "#9b3038",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG SL 로드스터-MANUFAKTUR 루벨라이트 레드.webp"
+          },
+          {
+            "id": "paint-add-0046",
+            "name": "MANUFAKTUR 빈티지 블루 솔리드",
+            "hex": "#6E8DA0",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG SL 로드스터-MANUFAKTUR 빈티지 블루 솔리드.webp"
+          },
+          {
+            "id": "paint-add-0047",
+            "name": "MANUFAKTUR 스펙트럴 블루 마그노",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG SL 로드스터-MANUFAKTUR 스펙트럴 블루 마그노.webp"
+          },
+          {
+            "id": "paint-add-0048",
+            "name": "MANUFAKTUR 실리콘 그레이 솔리드",
+            "hex": "#4F5455",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG SL 로드스터-MANUFAKTUR 실리콘 그레이 솔리드.webp"
+          },
+          {
+            "id": "paint-add-0049",
+            "name": "MANUFAKTUR 알파인 그레이 솔리드",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG SL 로드스터-MANUFAKTUR 알파인 그레이 솔리드.webp"
+          },
+          {
+            "id": "paint-add-0050",
+            "name": "MANUFAKTUR 오팔라이트 화이트 마그노",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG SL 로드스터-MANUFAKTUR 오팔라이트 화이트 마그노.webp"
+          },
+          {
+            "id": "paint-add-0051",
+            "name": "MANUFAKTUR 오팔라이트 화이트 브라이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG SL 로드스터-MANUFAKTUR 오팔라이트 화이트 브라이트.webp"
+          },
+          {
+            "id": "paint-add-0052",
+            "name": "MANUFAKTUR 익스클루시브 코트 다 쥐르 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG SL 로드스터-MANUFAKTUR 익스클루시브 코트 다 쥐르 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0053",
+            "name": "MANUFAKTUR 파타고니아 레드 브라이트",
+            "hex": "#9b3038",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG SL 로드스터-MANUFAKTUR 파타고니아 레드 브라이트.webp"
+          },
+          {
+            "id": "paint-add-0054",
+            "name": "MANUFAKTUR 하이테크 실버 마그노",
+            "hex": "#97A1A9",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG SL 로드스터-MANUFAKTUR 하이테크 실버 마그노.webp"
+          },
+          {
+            "id": "paint-add-0055",
+            "name": "셀레나이트 그레이",
+            "hex": "#555A5B",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG SL 로드스터-셀레나이트 그레이.webp"
+          },
+          {
+            "id": "paint-add-0056",
+            "name": "스펙트럴 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG SL 로드스터-스펙트럴 블루.webp"
+          },
+          {
+            "id": "paint-add-0057",
+            "name": "썬 옐로우",
+            "hex": "#c7a83f",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG SL 로드스터-썬 옐로우.webp"
+          },
+          {
+            "id": "paint-add-0058",
+            "name": "아일랜드 미드 그린 마그노",
+            "hex": "#476353",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG SL 로드스터-아일랜드 미드 그린 마그노.webp"
+          },
+          {
+            "id": "paint-add-0059",
+            "name": "옵시디안 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG SL 로드스터-옵시디안 블랙.webp"
+          },
+          {
+            "id": "paint-add-0060",
+            "name": "하이테크 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG SL 로드스터-하이테크 실버.webp"
+          },
+          {
+            "id": "paint-add-0061",
+            "name": "하이퍼 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG SL 로드스터-하이퍼 블루.webp"
+          }
+        ]
+      },
+      {
+        "name": "EQA",
+        "detailModels": [
+          {
+            "name": "EQA 250",
+            "trims": [
+              "Progressive"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0062",
+            "name": "MANUFAKTUR 파타고니아 레드",
+            "hex": "#9b3038",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQA-MANUFAKTUR 파타고니아 레드.webp"
+          },
+          {
+            "id": "paint-add-0063",
+            "name": "나이트 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQA-나이트 블랙.webp"
+          },
+          {
+            "id": "paint-add-0064",
+            "name": "마운틴 그레이",
+            "hex": "#4B4D50",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQA-마운틴 그레이.webp"
+          },
+          {
+            "id": "paint-add-0065",
+            "name": "코스모스 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQA-코스모스 블랙.webp"
+          },
+          {
+            "id": "paint-add-0066",
+            "name": "폴라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQA-폴라 화이트.webp"
+          },
+          {
+            "id": "paint-add-0067",
+            "name": "하이 테크 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQA-하이 테크 실버.webp"
+          }
+        ]
+      },
+      {
+        "name": "EQB",
+        "detailModels": [
+          {
+            "name": "EQB 300 4MATIC",
+            "trims": [
+              "Progressive"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0068",
+            "name": "MANUFAKTUR 파타고니아 레드",
+            "hex": "#9b3038",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQB-MANUFAKTUR 파타고니아 레드.webp"
+          },
+          {
+            "id": "paint-add-0069",
+            "name": "나이트 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQB-나이트 블랙.webp"
+          },
+          {
+            "id": "paint-add-0070",
+            "name": "마운틴 그레이",
+            "hex": "#4B4D50",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQB-마운틴 그레이.webp"
+          },
+          {
+            "id": "paint-add-0071",
+            "name": "스펙트럴 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQB-스펙트럴 블루.webp"
+          },
+          {
+            "id": "paint-add-0072",
+            "name": "코스모스 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQB-코스모스 블랙.webp"
+          },
+          {
+            "id": "paint-add-0073",
+            "name": "폴라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQB-폴라 화이트.webp"
+          },
+          {
+            "id": "paint-add-0074",
+            "name": "하이 테크 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQB-하이 테크 실버.webp"
+          }
+        ]
+      },
+      {
+        "name": "EQE",
+        "detailModels": [
+          {
+            "name": "EQE 350+",
+            "trims": [
+              "A/T"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0075",
+            "name": "그라파이트 그레이",
+            "hex": "#3A3D45",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQE-그라파이트 그레이.webp"
+          },
+          {
+            "id": "paint-add-0076",
+            "name": "블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQE-블랙.webp"
+          },
+          {
+            "id": "paint-add-0077",
+            "name": "셀레나이트 그레이",
+            "hex": "#404546",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQE-셀레나이트 그레이.webp"
+          },
+          {
+            "id": "paint-add-0078",
+            "name": "소다라이트 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQE-소다라이트 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0079",
+            "name": "옵시디안 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQE-옵시디안 블랙.webp"
+          },
+          {
+            "id": "paint-add-0080",
+            "name": "폴라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQE-폴라 화이트.webp"
+          },
+          {
+            "id": "paint-add-0081",
+            "name": "하이 테크 실버 메탈릭",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQE-하이 테크 실버 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "EQS",
+        "detailModels": [
+          {
+            "name": "EQS 350",
+            "trims": [
+              "A/T"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0082",
+            "name": "그라파이트 그레이",
+            "hex": "#454850",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQS-그라파이트 그레이.webp"
+          },
+          {
+            "id": "paint-add-0083",
+            "name": "노틱 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQS-노틱 블루.webp"
+          },
+          {
+            "id": "paint-add-0084",
+            "name": "블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQS-블랙.webp"
+          },
+          {
+            "id": "paint-add-0085",
+            "name": "소다라이트 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQS-소다라이트 블루.webp"
+          },
+          {
+            "id": "paint-add-0086",
+            "name": "오닉스 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQS-오닉스 블랙.webp"
+          },
+          {
+            "id": "paint-add-0087",
+            "name": "옵시디안 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQS-옵시디안 블랙.webp"
+          },
+          {
+            "id": "paint-add-0088",
+            "name": "폴라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQS-폴라 화이트.webp"
+          },
+          {
+            "id": "paint-add-0089",
+            "name": "하이 테크 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/EQS-하이 테크 실버.webp"
+          }
+        ]
+      },
+      {
+        "name": "AMG GT 43 쿠페",
+        "detailModels": [
+          {
+            "name": "AMG GT",
+            "trims": [
+              "43"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-benz-amggt43-rubellite-red",
+            "name": "루벨라이트 레드",
+            "hex": "#2A1E1F",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 43-루벨라이트 레드.webp"
+          },
+          {
+            "id": "paint-benz-amggt43-selenite-grey",
+            "name": "셀레나이트 그레이",
+            "hex": "#666a6a",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 43-셀레나이트 그레이.webp"
+          },
+          {
+            "id": "paint-benz-amggt43-spectral-blue",
+            "name": "스펙트럴 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 43-스펙트럴 블루.webp"
+          },
+          {
+            "id": "paint-benz-amggt43-sun-yellow",
+            "name": "썬 옐로우",
+            "hex": "#d5aa39",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 43-썬 옐로우.webp"
+          },
+          {
+            "id": "paint-benz-amggt43-obsidian-black",
+            "name": "옵시디안 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 43-옵시디안 블랙.webp"
+          },
+          {
+            "id": "paint-benz-amggt43-high-tech-silver",
+            "name": "하이 테크 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 43-하이 테크 실버.webp"
+          },
+          {
+            "id": "paint-benz-amggt43-manufaktur-green-hell-magno",
+            "name": "MANUFAKTUR 그린 헬 마그노",
+            "hex": "#4f5b46",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 43-MANUFAKTUR 그린 헬 마그노.webp"
+          },
+          {
+            "id": "paint-benz-amggt43-manufaktur-night-black-magno",
+            "name": "MANUFAKTUR 나이트 블랙 마그노",
+            "hex": "#242526",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 43-MANUFAKTUR 나이트 블랙 마그노.webp"
+          },
+          {
+            "id": "paint-benz-amggt43-manufaktur-desert-sand",
+            "name": "MANUFAKTUR 데저트 샌드",
+            "hex": "#c1a77d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 43-MANUFAKTUR 데저트 샌드.webp"
+          },
+          {
+            "id": "paint-benz-amggt43-manufaktur-vintage-blue",
+            "name": "MANUFAKTUR 빈티지 블루",
+            "hex": "#53697a",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 43-MANUFAKTUR 빈티지 블루.webp"
+          },
+          {
+            "id": "paint-benz-amggt43-manufaktur-spectral-blue-magno",
+            "name": "MANUFAKTUR 스펙트럴 블루 마그노",
+            "hex": "#2e5377",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 43-MANUFAKTUR 스펙트럴 블루 마그노.webp"
+          },
+          {
+            "id": "paint-benz-amggt43-manufaktur-silicon-grey-solid",
+            "name": "MANUFAKTUR 실리콘 그레이 솔리드",
+            "hex": "#8a8c8d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 43-MANUFAKTUR 실리콘 그레이 솔리드.webp"
+          },
+          {
+            "id": "paint-benz-amggt43-manufaktur-alpine-grey-solid",
+            "name": "MANUFAKTUR 알파인 그레이 솔리드",
+            "hex": "#929393",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 43-MANUFAKTUR 알파인 그레이 솔리드.webp"
+          },
+          {
+            "id": "paint-benz-amggt43-manufaktur-orange-flame",
+            "name": "MANUFAKTUR 오렌지 플레임",
+            "hex": "#c65f28",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 43-MANUFAKTUR 오렌지 플레임.webp"
+          },
+          {
+            "id": "paint-benz-amggt43-manufaktur-opalite-white-metallic",
+            "name": "MANUFAKTUR 오팔라이트 화이트 메탈릭",
+            "hex": "#ececea",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 43-MANUFAKTUR 오팔라이트 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-benz-amggt43-manufaktur-copper-orange-magno",
+            "name": "MANUFAKTUR 코퍼 오렌지 마그노",
+            "hex": "#8d5a32",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 43-MANUFAKTUR 코퍼 오렌지 마그노.webp"
+          },
+          {
+            "id": "paint-benz-amggt43-manufaktur-patagonia-red",
+            "name": "MANUFAKTUR 파타고니아 레드",
+            "hex": "#a92b31",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 43-MANUFAKTUR 파타고니아 레드.webp"
+          },
+          {
+            "id": "paint-benz-amggt43-manufaktur-hightech-silver-magno",
+            "name": "MANUFAKTUR 하이테크 실버 마그노",
+            "hex": "#9ea4ab",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 43-MANUFAKTUR 하이테크 실버 마그노.webp"
+          },
+          {
+            "id": "paint-benz-amggt43-manufaktur-hyper-blue-magno",
+            "name": "MANUFAKTUR 하이퍼 블루 마그노",
+            "hex": "#2f5fa8",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 43-MANUFAKTUR 하이퍼 블루 마그노.webp"
+          }
+        ]
+      },
+      {
+        "name": "AMG GT 55 쿠페",
+        "detailModels": [
+          {
+            "name": "AMG GT",
+            "trims": [
+              "55"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-benz-amggt55-rubellite-red",
+            "name": "루벨라이트 레드",
+            "hex": "#2A1E1F",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 55-루벨라이트 레드.webp"
+          },
+          {
+            "id": "paint-benz-amggt55-selenite-grey",
+            "name": "셀레나이트 그레이",
+            "hex": "#666a6a",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 55-셀레나이트 그레이.webp"
+          },
+          {
+            "id": "paint-benz-amggt55-spectral-blue",
+            "name": "스펙트럴 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 55-스펙트럴 블루.webp"
+          },
+          {
+            "id": "paint-benz-amggt55-sun-yellow",
+            "name": "썬 옐로우",
+            "hex": "#d5aa39",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 55-썬 옐로우.webp"
+          },
+          {
+            "id": "paint-benz-amggt55-elbaite-green-metallic",
+            "name": "엘바이트 그린 메탈릭",
+            "hex": "#566c58",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 55-엘바이트 그린 메탈릭.webp"
+          },
+          {
+            "id": "paint-benz-amggt55-obsidian-black",
+            "name": "옵시디안 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 55-옵시디안 블랙.webp"
+          },
+          {
+            "id": "paint-benz-amggt55-high-tech-silver",
+            "name": "하이 테크 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 55-하이 테크 실버.webp"
+          },
+          {
+            "id": "paint-benz-amggt55-manufaktur-green-hell-magno",
+            "name": "MANUFAKTUR 그린 헬 마그노",
+            "hex": "#4f5b46",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 55-MANUFAKTUR 그린 헬 마그노.webp"
+          },
+          {
+            "id": "paint-benz-amggt55-manufaktur-night-black-magno",
+            "name": "MANUFAKTUR 나이트 블랙 마그노",
+            "hex": "#242526",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 55-MANUFAKTUR 나이트 블랙 마그노.webp"
+          },
+          {
+            "id": "paint-benz-amggt55-manufaktur-desert-sand",
+            "name": "MANUFAKTUR 데저트 샌드",
+            "hex": "#c1a77d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 55-MANUFAKTUR 데저트 샌드.webp"
+          },
+          {
+            "id": "paint-benz-amggt55-manufaktur-vintage-blue",
+            "name": "MANUFAKTUR 빈티지 블루",
+            "hex": "#53697a",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 55-MANUFAKTUR 빈티지 블루.webp"
+          },
+          {
+            "id": "paint-benz-amggt55-manufaktur-spectral-blue-magno",
+            "name": "MANUFAKTUR 스펙트럴 블루 마그노",
+            "hex": "#2e5377",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 55-MANUFAKTUR 스펙트럴 블루 마그노.webp"
+          },
+          {
+            "id": "paint-benz-amggt55-manufaktur-silicon-grey-solid",
+            "name": "MANUFAKTUR 실리콘 그레이 솔리드",
+            "hex": "#8a8c8d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 55-MANUFAKTUR 실리콘 그레이 솔리드.webp"
+          },
+          {
+            "id": "paint-benz-amggt55-manufaktur-alpine-grey-solid",
+            "name": "MANUFAKTUR 알파인 그레이 솔리드",
+            "hex": "#929393",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 55-MANUFAKTUR 알파인 그레이 솔리드.webp"
+          },
+          {
+            "id": "paint-benz-amggt55-manufaktur-orange-flame",
+            "name": "MANUFAKTUR 오렌지 플레임",
+            "hex": "#c65f28",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 55-MANUFAKTUR 오렌지 플레임.webp"
+          },
+          {
+            "id": "paint-benz-amggt55-manufaktur-opalite-white-metallic",
+            "name": "MANUFAKTUR 오팔라이트 화이트 메탈릭",
+            "hex": "#ececea",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 55-MANUFAKTUR 오팔라이트 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-benz-amggt55-manufaktur-copper-orange-magno",
+            "name": "MANUFAKTUR 코퍼 오렌지 마그노",
+            "hex": "#8d5a32",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 55-MANUFAKTUR 코퍼 오렌지 마그노.webp"
+          },
+          {
+            "id": "paint-benz-amggt55-manufaktur-patagonia-red",
+            "name": "MANUFAKTUR 파타고니아 레드",
+            "hex": "#a92b31",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 55-MANUFAKTUR 파타고니아 레드.webp"
+          },
+          {
+            "id": "paint-benz-amggt55-manufaktur-hightech-silver-magno",
+            "name": "MANUFAKTUR 하이테크 실버 마그노",
+            "hex": "#9ea4ab",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 55-MANUFAKTUR 하이테크 실버 마그노.webp"
+          },
+          {
+            "id": "paint-benz-amggt55-manufaktur-hyper-blue-magno",
+            "name": "MANUFAKTUR 하이퍼 블루 마그노",
+            "hex": "#2f5fa8",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 55-MANUFAKTUR 하이퍼 블루 마그노.webp"
+          }
+        ]
+      },
+      {
+        "name": "AMG GT 63 S E 쿠페",
+        "detailModels": [
+          {
+            "name": "AMG GT",
+            "trims": [
+              "63 S E Performance"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-benz-amggt63se-rubellite-red",
+            "name": "루벨라이트 레드",
+            "hex": "#2A1E1F",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 63 S E Performance-루벨라이트 레드.webp"
+          },
+          {
+            "id": "paint-benz-amggt63se-selenite-grey",
+            "name": "셀레나이트 그레이",
+            "hex": "#666a6a",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 63 S E Performance-셀레나이트 그레이.webp"
+          },
+          {
+            "id": "paint-benz-amggt63se-spectral-blue",
+            "name": "스펙트럴 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 63 S E Performance-스펙트럴 블루.webp"
+          },
+          {
+            "id": "paint-benz-amggt63se-sun-yellow",
+            "name": "썬 옐로우",
+            "hex": "#d5aa39",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 63 S E Performance-썬 옐로우.webp"
+          },
+          {
+            "id": "paint-benz-amggt63se-obsidian-black",
+            "name": "옵시디안 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 63 S E Performance-옵시디안 블랙.webp"
+          },
+          {
+            "id": "paint-benz-amggt63se-high-tech-silver",
+            "name": "하이 테크 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 63 S E Performance-하이 테크 실버.webp"
+          },
+          {
+            "id": "paint-benz-amggt63se-manufaktur-green-hell-magno",
+            "name": "MANUFAKTUR 그린 헬 마그노",
+            "hex": "#4f5b46",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 63 S E Performance-MANUFAKTUR 그린 헬 마그노.webp"
+          },
+          {
+            "id": "paint-benz-amggt63se-manufaktur-night-black-magno",
+            "name": "MANUFAKTUR 나이트 블랙 마그노",
+            "hex": "#242526",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 63 S E Performance-MANUFAKTUR 나이트 블랙 마그노.webp"
+          },
+          {
+            "id": "paint-benz-amggt63se-manufaktur-desert-sand",
+            "name": "MANUFAKTUR 데저트 샌드",
+            "hex": "#c1a77d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 63 S E Performance-MANUFAKTUR 데저트 샌드.webp"
+          },
+          {
+            "id": "paint-benz-amggt63se-manufaktur-vintage-blue",
+            "name": "MANUFAKTUR 빈티지 블루",
+            "hex": "#53697a",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 63 S E Performance-MANUFAKTUR 빈티지 블루.webp"
+          },
+          {
+            "id": "paint-benz-amggt63se-manufaktur-spectral-blue-magno",
+            "name": "MANUFAKTUR 스펙트럴 블루 마그노",
+            "hex": "#2e5377",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 63 S E Performance-MANUFAKTUR 스펙트럴 블루 마그노.webp"
+          },
+          {
+            "id": "paint-benz-amggt63se-manufaktur-silicon-grey-solid",
+            "name": "MANUFAKTUR 실리콘 그레이 솔리드",
+            "hex": "#8a8c8d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 63 S E Performance-MANUFAKTUR 실리콘 그레이 솔리드.webp"
+          },
+          {
+            "id": "paint-benz-amggt63se-manufaktur-alpine-grey-solid",
+            "name": "MANUFAKTUR 알파인 그레이 솔리드",
+            "hex": "#929393",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 63 S E Performance-MANUFAKTUR 알파인 그레이 솔리드.webp"
+          },
+          {
+            "id": "paint-benz-amggt63se-manufaktur-orange-flame",
+            "name": "MANUFAKTUR 오렌지 플레임",
+            "hex": "#c65f28",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 63 S E Performance-MANUFAKTUR 오렌지 플레임.webp"
+          },
+          {
+            "id": "paint-benz-amggt63se-manufaktur-opalite-white-magno",
+            "name": "MANUFAKTUR 오팔라이트 화이트 마그노",
+            "hex": "#dddcd7",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 63 S E Performance-MANUFAKTUR 오팔라이트 화이트 마그노.webp"
+          },
+          {
+            "id": "paint-benz-amggt63se-manufaktur-opalite-white-metallic",
+            "name": "MANUFAKTUR 오팔라이트 화이트 메탈릭",
+            "hex": "#ececea",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 63 S E Performance-MANUFAKTUR 오팔라이트 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-benz-amggt63se-manufaktur-copper-orange-magno",
+            "name": "MANUFAKTUR 코퍼 오렌지 마그노",
+            "hex": "#8d5a32",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 63 S E Performance-MANUFAKTUR 코퍼 오렌지 마그노.webp"
+          },
+          {
+            "id": "paint-benz-amggt63se-manufaktur-patagonia-red",
+            "name": "MANUFAKTUR 파타고니아 레드",
+            "hex": "#a92b31",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 63 S E Performance-MANUFAKTUR 파타고니아 레드.webp"
+          },
+          {
+            "id": "paint-benz-amggt63se-manufaktur-hightech-silver-magno",
+            "name": "MANUFAKTUR 하이테크 실버 마그노",
+            "hex": "#9ea4ab",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 63 S E Performance-MANUFAKTUR 하이테크 실버 마그노.webp"
+          },
+          {
+            "id": "paint-benz-amggt63se-manufaktur-hyper-blue-magno",
+            "name": "MANUFAKTUR 하이퍼 블루 마그노",
+            "hex": "#2f5fa8",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/AMG GT 63 S E Performance-MANUFAKTUR 하이퍼 블루 마그노.webp"
+          }
+        ]
+      },
+      {
+        "name": "CLA",
+        "detailModels": [
+          {
+            "name": "CLA 250 4MATIC",
+            "trims": [
+              "AMG Line"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0110",
+            "name": "코스모스 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/CLA AMG GT 쿠페-코스모스 블랙.webp"
+          }
+        ]
+      },
+      {
+  "name": "CLE AMG 카브리올레",
+  "detailModels": [
+    {
+      "name": "CLE 200",
+      "trims": [
+        "AMG Line"
+      ]
+    }
+  ],
+  "paints": [
+ {
+      "id": "paint-benz-cle-amg-cabriolet-spectral-blue-v2",
+      "name": "스펙트럴 블루",
+      "hex": "#315d88",
+      "border": "#cfd5dc",
+      "image": "images/vehicles/벤츠/CLE AMG 카브리올레-스펙트럴 블루.webp"
+    },
+    {
+      "id": "paint-benz-cle-amg-cabriolet-sun-yellow-v2",
+      "name": "썬 옐로우",
+      "hex": "#d5aa39",
+      "border": "#cfd5dc",
+      "image": "images/vehicles/벤츠/CLE AMG 카브리올레-썬 옐로우.webp"
+    },
+    {
+      "id": "paint-benz-cle-amg-cabriolet-obsidian-black-v2",
+      "name": "옵시디안 블랙",
+      "hex": "#17191c",
+      "border": "#cfd5dc",
+      "image": "images/vehicles/벤츠/CLE AMG 카브리올레-옵시디안 블랙.webp"
+    },
+    {
+      "id": "paint-benz-cle-amg-cabriolet-manufaktur-graphite-grey-magno-v2",
+      "name": "MANUFAKTUR 그라파이트 그레이 마그노",
+      "hex": "#4f5254",
+      "border": "#cfd5dc",
+      "image": "images/vehicles/벤츠/CLE AMG 카브리올레-MANUFAKTUR 그라파이트 그레이 마그노.webp"
+    },
+    {
+      "id": "paint-benz-cle-amg-cabriolet-manufaktur-spectral-blue-magno-v2",
+      "name": "MANUFAKTUR 스펙트럴 블루 마그노",
+      "hex": "#2e5377",
+      "border": "#cfd5dc",
+      "image": "images/vehicles/벤츠/CLE AMG 카브리올레-MANUFAKTUR 스펙트럴 블루 마그노.webp"
+    },
+    {
+      "id": "paint-benz-cle-amg-cabriolet-manufaktur-alpine-grey-v2",
+      "name": "MANUFAKTUR 알파인 그레이",
+      "hex": "#929393",
+      "border": "#cfd5dc",
+      "image": "images/vehicles/벤츠/CLE AMG 카브리올레-MANUFAKTUR 알파인 그레이.webp"
+    },
+    {
+      "id": "paint-benz-cle-amg-cabriolet-manufaktur-opalite-white-v2",
+      "name": "MANUFAKTUR 오팔라이트 화이트",
+      "hex": "#ececea",
+      "border": "#cfd5dc",
+      "image": "images/vehicles/벤츠/CLE AMG 카브리올레-MANUFAKTUR 오팔라이트 화이트.webp"
+    },
+    {
+      "id": "paint-benz-cle-amg-cabriolet-manufaktur-patagonia-red-bright-v2",
+      "name": "MANUFAKTUR 파타고니아 레드 브라이트",
+      "hex": "#a92b31",
+      "border": "#cfd5dc",
+      "image": "images/vehicles/벤츠/CLE AMG 카브리올레-MANUFAKTUR 파타고니아 레드 브라이트.webp"
+    }
+  ]
+},
+      {
+        "name": "CLE AMG 쿠페",
+        "detailModels": [
+          {
+            "name": "CLE 200",
+            "trims": [
+              "AMG Line"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-benz-cle-amg-coupe-spectral-blue",
+            "name": "스펙트럴 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/CLE AMG 쿠페-스펙트럴 블루.webp"
+          },
+          {
+            "id": "paint-benz-cle-amg-coupe-sun-yellow",
+            "name": "썬 옐로우",
+            "hex": "#d5aa39",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/CLE AMG 쿠페-썬 옐로우.webp"
+          },
+          {
+            "id": "paint-benz-cle-amg-coupe-obsidian-black",
+            "name": "옵시디안 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/CLE AMG 쿠페-옵시디안 블랙.webp"
+          },
+          {
+            "id": "paint-benz-cle-amg-coupe-manufaktur-graphite-grey-magno",
+            "name": "MANUFAKTUR 그라파이트 그레이 마그노",
+            "hex": "#4f5254",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/CLE AMG 쿠페-MANUFAKTUR 그라파이트 그레이 마그노.webp"
+          },
+          {
+            "id": "paint-benz-cle-amg-coupe-manufaktur-spectral-blue-magno",
+            "name": "MANUFAKTUR 스펙트럴 블루 마그노",
+            "hex": "#2e5377",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/CLE AMG 쿠페-MANUFAKTUR 스펙트럴 블루 마그노.webp"
+          },
+          {
+            "id": "paint-benz-cle-amg-coupe-manufaktur-alpine-grey",
+            "name": "MANUFAKTUR 알파인 그레이",
+            "hex": "#929393",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/CLE AMG 쿠페-MANUFAKTUR 알파인 그레이.webp"
+          },
+          {
+            "id": "paint-benz-cle-amg-coupe-manufaktur-opalite-white",
+            "name": "MANUFAKTUR 오팔라이트 화이트",
+            "hex": "#ececea",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/CLE AMG 쿠페-MANUFAKTUR 오팔라이트 화이트.webp"
+          },
+          {
+            "id": "paint-benz-cle-amg-coupe-manufaktur-patagonia-red-bright",
+            "name": "MANUFAKTUR 파타고니아 레드 브라이트",
+            "hex": "#a92b31",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/CLE AMG 쿠페-MANUFAKTUR 파타고니아 레드 브라이트.webp"
+          }
+        ]
+      },
+      {
+        "name": "GLA",
+        "detailModels": [
+          {
+            "name": "GLA 250 4MATIC",
+            "trims": [
+              "DCT"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0111",
+            "name": "마운틴 그레이 메탈릭",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLA-마운틴 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0112",
+            "name": "제트 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLA-제트 블랙.webp"
+          },
+          {
+            "id": "paint-add-0113",
+            "name": "폴라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLA-폴라 화이트.webp"
+          }
+        ]
+      },
+      {
+        "name": "GLB",
+        "detailModels": [
+          {
+            "name": "GLB 250 4MATIC",
+            "trims": [
+              "DCT"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0114",
+            "name": "MANUFAKTUR 파타고니아 레드",
+            "hex": "#9b3038",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLB-MANUFAKTUR 파타고니아 레드.webp"
+          },
+          {
+            "id": "paint-add-0115",
+            "name": "나이트 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLB-나이트 블랙.webp"
+          },
+          {
+            "id": "paint-add-0116",
+            "name": "마운틴 그레이",
+            "hex": "#737675",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLB-마운틴 그레이.webp"
+          },
+          {
+            "id": "paint-add-0117",
+            "name": "스펙트럴 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLB-스펙트럴 블루.webp"
+          },
+          {
+            "id": "paint-add-0118",
+            "name": "코스모스 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLB-코스모스 블랙.webp"
+          },
+          {
+            "id": "paint-add-0119",
+            "name": "폴라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLB-폴라 화이트.webp"
+          },
+          {
+            "id": "paint-add-0120",
+            "name": "하이 테크 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLB-하이 테크 실버.webp"
+          }
+        ]
+      },
+      {
+        "name": "GLC",
+        "detailModels": [
+          {
+            "name": "GLC 300 4MATIC",
+            "trims": [
+              "Avantgarde"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-benz-glc-graphite-grey",
+            "name": "그라파이트 그레이",
+            "hex": "#5f656b",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLC-그라파이트 그레이.webp"
+          },
+          {
+            "id": "paint-benz-glc-verde-silver",
+            "name": "베르데 실버",
+            "hex": "#8AA6A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLC-베르데 실버.webp"
+          },
+          {
+            "id": "paint-benz-glc-spectral-blue",
+            "name": "스펙트럴 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLC-스펙트럴 블루.webp"
+          },
+          {
+            "id": "paint-benz-glc-obsidian-black",
+            "name": "옵시디안 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLC-옵시디안 블랙.webp"
+          },
+          {
+            "id": "paint-benz-glc-polar-white",
+            "name": "폴라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLC-폴라 화이트.webp"
+          },
+          {
+            "id": "paint-benz-glc-high-tech-silver",
+            "name": "하이 테크 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLC-하이 테크 실버.webp"
+          },
+          {
+            "id": "paint-benz-glc-manufaktur-graphite-grey-magno",
+            "name": "MANUFAKTUR 그라파이트 그레이 마그노",
+            "hex": "#4f5254",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLC-MANUFAKTUR 그라파이트 그레이 마그노.webp"
+          },
+          {
+            "id": "paint-benz-glc-manufaktur-alpine-grey-solid",
+            "name": "MANUFAKTUR 알파인 그레이 솔리드",
+            "hex": "#929393",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLC-MANUFAKTUR 알파인 그레이 솔리드.webp"
+          },
+          {
+            "id": "paint-benz-glc-manufaktur-opalite-white-bright",
+            "name": "MANUFAKTUR 오팔라이트 화이트 브라이트",
+            "hex": "#ececea",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLC-MANUFAKTUR 오팔라이트 화이트 브라이트.webp"
+          },
+          {
+            "id": "paint-benz-glc-manufaktur-patagonia-red-metallic",
+            "name": "MANUFAKTUR 파타고니아 레드 메탈릭",
+            "hex": "#8f3035",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLC-MANUFAKTUR 파타고니아 레드 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "GLC 쿠페",
+        "detailModels": [
+          {
+            "name": "GLC 300 4MATIC",
+            "trims": [
+              "Avantgarde"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-benz-glc-coupe-avantgarde-graphite-grey",
+            "name": "그라파이트 그레이",
+            "hex": "#5f656b",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLC 쿠페-그라파이트 그레이.webp"
+          },
+          {
+            "id": "paint-benz-glc-coupe-avantgarde-verde-silver",
+            "name": "베르데 실버",
+            "hex": "#8AA6A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLC 쿠페-베르데 실버.webp"
+          },
+          {
+            "id": "paint-benz-glc-coupe-avantgarde-spectral-blue",
+            "name": "스펙트럴 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLC 쿠페-스펙트럴 블루.webp"
+          },
+          {
+            "id": "paint-benz-glc-coupe-avantgarde-obsidian-black",
+            "name": "옵시디안 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLC 쿠페-옵시디안 블랙.webp"
+          },
+          {
+            "id": "paint-benz-glc-coupe-avantgarde-polar-white",
+            "name": "폴라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLC 쿠페-폴라 화이트.webp"
+          },
+          {
+            "id": "paint-benz-glc-coupe-avantgarde-high-tech-silver",
+            "name": "하이 테크 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLC 쿠페-하이 테크 실버.webp"
+          },
+          {
+            "id": "paint-benz-glc-coupe-avantgarde-manufaktur-graphite-grey-magno",
+            "name": "MANUFAKTUR 그라파이트 그레이 마그노",
+            "hex": "#4f5254",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLC 쿠페-MANUFAKTUR 그라파이트 그레이 마그노.webp"
+          },
+          {
+            "id": "paint-benz-glc-coupe-avantgarde-manufaktur-alpine-grey-solid",
+            "name": "MANUFAKTUR 알파인 그레이 솔리드",
+            "hex": "#929393",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLC 쿠페-MANUFAKTUR 알파인 그레이 솔리드.webp"
+          },
+          {
+            "id": "paint-benz-glc-coupe-avantgarde-manufaktur-opalite-white-bright",
+            "name": "MANUFAKTUR 오팔라이트 화이트 브라이트",
+            "hex": "#ececea",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLC 쿠페-MANUFAKTUR 오팔라이트 화이트 브라이트.webp"
+          },
+          {
+            "id": "paint-benz-glc-coupe-avantgarde-manufaktur-patagonia-red-metallic",
+            "name": "MANUFAKTUR 파타고니아 레드 메탈릭",
+            "hex": "#8f3035",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLC 쿠페-MANUFAKTUR 파타고니아 레드 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "GLE",
+        "detailModels": [
+          {
+            "name": "GLE300d 4MATIC",
+            "trims": [
+              "A/T"
+            ]
+          },
+          {
+            "name": "GLE350d 4MATIC",
+            "trims": [
+              "A/T"
+            ]
+          },
+          {
+            "name": "GLE450d 4MATIC",
+            "trims": [
+              "A/T"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0121",
+            "name": "MANUFAKTUR 실리콘 그레이 솔리드",
+            "hex": "#585C5D",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLE-MANUFAKTUR 실리콘 그레이 솔리드.webp"
+          },
+          {
+            "id": "paint-add-0122",
+            "name": "MANUFAKTUR 아일랜드 그린",
+            "hex": "#6F898D",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLE-MANUFAKTUR 아일랜드 그린.webp"
+          },
+          {
+            "id": "paint-add-0123",
+            "name": "MANUFAKTUR 알파인 그레이 솔리드",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLE-MANUFAKTUR 알파인 그레이 솔리드.webp"
+          },
+          {
+            "id": "paint-add-0124",
+            "name": "MANUFAKTUR 오팔라이트 화이트 브라이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLE-MANUFAKTUR 오팔라이트 화이트 브라이트.webp"
+          },
+          {
+            "id": "paint-add-0125",
+            "name": "MANUFAKTUR 코트다쥐르 라이트 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLE-MANUFAKTUR 코트다쥐르 라이트 블루.webp"
+          },
+          {
+            "id": "paint-add-0126",
+            "name": "셀라나이트 그레이",
+            "hex": "#5C5E5D",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLE-셀라나이트 그레이.webp"
+          },
+          {
+            "id": "paint-add-0127",
+            "name": "소달라이트 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLE-소달라이트 블루.webp"
+          },
+          {
+            "id": "paint-add-0128",
+            "name": "옵시디안 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLE-옵시디안 블랙.webp"
+          },
+          {
+            "id": "paint-add-0129",
+            "name": "폴라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLE-폴라 화이트.webp"
+          },
+          {
+            "id": "paint-add-0130",
+            "name": "하이 테크 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLE-하이 테크 실버.webp"
+          }
+        ]
+      },
+      {
+        "name": "GLS",
+        "detailModels": [
+          {
+            "name": "GLS 450 4MATIC",
+            "trims": [
+              "AMG Line Premium"
+            ]
+          },
+          {
+            "name": "GLS 450d 4MATIC",
+            "trims": [
+              "AMG Line Premium"
+            ]
+          },
+          {
+            "name": "GLS 4580 4MATIC",
+            "trims": [
+              "AMG Line"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0131",
+            "name": "셀레나이트 그레이",
+            "hex": "#4F5354",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLS-셀레나이트 그레이.webp"
+          },
+          {
+            "id": "paint-add-0132",
+            "name": "소다라이트 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLS-소다라이트 블루.webp"
+          },
+          {
+            "id": "paint-add-0133",
+            "name": "옵시디안 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLS-옵시디안 블랙.webp"
+          },
+          {
+            "id": "paint-add-0134",
+            "name": "폴라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLS-폴라 화이트.webp"
+          },
+          {
+            "id": "paint-add-0135",
+            "name": "하이 테크 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/GLS-하이 테크 실버.webp"
+          }
+        ]
+      },
+      {
+        "name": "마이바흐 S클래스",
+        "detailModels": [
+          {
+            "name": "S 580 4MATIC",
+            "trims": [
+              "A/T"
+            ]
+          },
+          {
+            "name": "S 680 4MATIC",
+            "trims": [
+              "A/T"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0136",
+            "name": "MANUFAKTUR 그라파이트 그레이",
+            "hex": "#535959",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-MANUFAKTUR 그라파이트 그레이.webp"
+          },
+          {
+            "id": "paint-add-0137",
+            "name": "MANUFAKTUR 나이트 블랙 마그노",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-MANUFAKTUR 나이트 블랙 마그노.webp"
+          },
+          {
+            "id": "paint-add-0138",
+            "name": "MANUFAKTUR 미스틱 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-MANUFAKTUR 미스틱 블루.webp"
+          },
+          {
+            "id": "paint-add-0139",
+            "name": "MANUFAKTUR 베르데 실버 마그노",
+            "hex": "#415356",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-MANUFAKTUR 베르데 실버 마그노.webp"
+          },
+          {
+            "id": "paint-add-0140",
+            "name": "MANUFAKTUR 빈티지 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-MANUFAKTUR 빈티지 블루.webp"
+          },
+          {
+            "id": "paint-add-0141",
+            "name": "MANUFAKTUR 실리콘 그레이 솔리드",
+            "hex": "#535A5A",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-MANUFAKTUR 실리콘 그레이 솔리드.webp"
+          },
+          {
+            "id": "paint-add-0142",
+            "name": "MANUFAKTUR 오팔라이트 화이트 마그노",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-MANUFAKTUR 오팔라이트 화이트 마그노.webp"
+          },
+          {
+            "id": "paint-add-0143",
+            "name": "MANUFAKTUR 오팔라이트 화이트 브라이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-MANUFAKTUR 오팔라이트 화이트 브라이트.webp"
+          },
+          {
+            "id": "paint-add-0144",
+            "name": "MANUFAKTUR 올리브 메탈릭",
+            "hex": "#4A573B",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-MANUFAKTUR 올리브 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0145",
+            "name": "MANUFAKTUR 칼라하리 골드 마그노",
+            "hex": "#a98650",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-MANUFAKTUR 칼라하리 골드 마그노.webp"
+          },
+          {
+            "id": "paint-add-0146",
+            "name": "MANUFAKTUR 칼라하리 골드",
+            "hex": "#a98650",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-MANUFAKTUR 칼라하리 골드.webp"
+          },
+          {
+            "id": "paint-add-0147",
+            "name": "MANUFAKTUR 파타고니아 레드",
+            "hex": "#9b3038",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-MANUFAKTUR 파타고니아 레드.webp"
+          },
+          {
+            "id": "paint-add-0148",
+            "name": "그라파이트 그레이",
+            "hex": "#262A29",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-그라파이트 그레이.webp"
+          },
+          {
+            "id": "paint-add-0149",
+            "name": "노틱 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-노틱 블루.webp"
+          },
+          {
+            "id": "paint-add-0150",
+            "name": "베르데 실버",
+            "hex": "#405658",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-베르데 실버.webp"
+          },
+          {
+            "id": "paint-add-0151",
+            "name": "벨벳 브라운",
+            "hex": "#745646",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-벨벳 브라운.webp"
+          },
+          {
+            "id": "paint-add-0152",
+            "name": "블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-블랙.webp"
+          },
+          {
+            "id": "paint-add-0153",
+            "name": "에메랄드 그린",
+            "hex": "#1D2929",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-에메랄드 그린.webp"
+          },
+          {
+            "id": "paint-add-0154",
+            "name": "옵시디안 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-옵시디안 블랙.webp"
+          },
+          {
+            "id": "paint-add-0155",
+            "name": "웜 그레이",
+            "hex": "#4A4846",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-웜 그레이.webp"
+          },
+          {
+            "id": "paint-add-0156",
+            "name": "하이 테크 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 S클래스-하이 테크 실버.webp"
+          }
+        ]
+      },
+      {
+        "name": "마이바흐 GLS",
+        "detailModels": [
+          {
+            "name": "GLS 600 4MATIC",
+            "trims": [
+              "A/T"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0157",
+            "name": "MANUFAKTUR 실리콘 그레이 솔리드",
+            "hex": "#616665",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 GLS-MANUFAKTUR 실리콘 그레이 솔리드.webp"
+          },
+          {
+            "id": "paint-add-0158",
+            "name": "MANUFAKTUR 알파인 그레이 솔리드",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 GLS-MANUFAKTUR 알파인 그레이 솔리드.webp"
+          },
+          {
+            "id": "paint-add-0159",
+            "name": "MANUFAKTUR 오팔라이트 화이트 브라이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 GLS-MANUFAKTUR 오팔라이트 화이트 브라이트.webp"
+          },
+          {
+            "id": "paint-add-0160",
+            "name": "MANUFAKTUR 코트다쥐르 라이트 블루",
+            "hex": "#7C8A97",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 GLS-MANUFAKTUR 코트다쥐르 라이트 블루.webp"
+          },
+          {
+            "id": "paint-add-0161",
+            "name": "셀레나이트 그레이",
+            "hex": "#737778",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 GLS-셀레나이트 그레이.webp"
+          },
+          {
+            "id": "paint-add-0162",
+            "name": "소다라이트 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 GLS-소다라이트 블루.webp"
+          },
+          {
+            "id": "paint-add-0163",
+            "name": "옵시디안 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 GLS-옵시디안 블랙.webp"
+          },
+          {
+            "id": "paint-add-0164",
+            "name": "하이 테크 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 GLS-하이 테크 실버.webp"
+          }
+        ]
+      },
+      {
+        "name": "마이바흐 SL 모노그램 시리즈",
+        "detailModels": [
+          {
+            "name": "SL 680 Monogram Series",
+            "trims": [
+              "A/T"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0165",
+            "name": "MANUFAKTUR 가넷 레드 메탈릭",
+            "hex": "#9b3038",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 SL 모노그램-MANUFAKTUR 가넷 레드 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "마이바흐 EQS",
+        "detailModels": [
+          {
+            "name": "EQS 680",
+            "trims": [
+              "A/T"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0166",
+            "name": "MANUFAKTUR 알파일 그레이 솔리드",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 EQS-MANUFAKTUR 알파일 그레이 솔리드.webp"
+          },
+          {
+            "id": "paint-add-0167",
+            "name": "MANUFAKTUR 오팔라이트 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 EQS-MANUFAKTUR 오팔라이트 화이트.webp"
+          },
+          {
+            "id": "paint-add-0168",
+            "name": "MANUFAKTUR 파타고니아 레드",
+            "hex": "#9b3038",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 EQS-MANUFAKTUR 파타고니아 레드.webp"
+          },
+          {
+            "id": "paint-add-0169",
+            "name": "마이바흐 투톤 페인트, 벨벳 브라운&오닉스 블랙",
+            "hex": "#745646",
+            "hex2": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 EQS-마이바흐 투톤 페인트, 벨벳 브라운&오닉스 블랙.webp"
+          },
+          {
+            "id": "paint-add-0170",
+            "name": "마이바흐 투톤 페인트, 옵시디안 블랙&MANUFAKTUR 칼라하리 골드",
+            "hex": "#17191c",
+            "hex2": "#9b8560",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 EQS-마이바흐 투톤 페인트, 옵시디안 블랙&MANUFAKTUR 칼라하리 골드.webp"
+          },
+          {
+            "id": "paint-add-0171",
+            "name": "마이바흐 투톤 페인트, 옵시디안 블랙&모하비 실버",
+            "hex": "#17191c",
+            "hex2": "#a9a7a6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 EQS-마이바흐 투톤 페인트, 옵시디안 블랙&모하비 실버.webp"
+          },
+          {
+            "id": "paint-add-0172",
+            "name": "마이바흐 투톤 페인트, 옵시디안 블랙&설레나이트 그레이",
+            "hex": "#17191c",
+            "hex2": "#52585b",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 EQS-마이바흐 투톤 페인트, 옵시디안 블랙&설레나이트 그레이.webp"
+          },
+          {
+            "id": "paint-add-0173",
+            "name": "마이바흐 투톤 페인트, 하이테크 실버&노틱 블루",
+            "hex": "#b9bec5",
+            "hex2": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 EQS-마이바흐 투톤 페인트, 하이테크 실버&노틱 블루.webp"
+          },
+          {
+            "id": "paint-add-0174",
+            "name": "마이바흐 투톤 페인트, 하이테크 실버&옵시디안 블랙",
+            "hex": "#b9bec5",
+            "hex2": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 EQS-마이바흐 투톤 페인트, 하이테크 실버&옵시디안 블랙.webp"
+          },
+          {
+            "id": "paint-add-0175",
+            "name": "벨벳 브라운",
+            "hex": "#745646",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 EQS-벨벳 브라운.webp"
+          },
+          {
+            "id": "paint-add-0176",
+            "name": "블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 EQS-블랙.webp"
+          },
+          {
+            "id": "paint-add-0177",
+            "name": "셀레나이트 그레이",
+            "hex": "#52585B",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 EQS-셀레나이트 그레이.webp"
+          },
+          {
+            "id": "paint-add-0178",
+            "name": "소다라이트 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 EQS-소다라이트 블루.webp"
+          },
+          {
+            "id": "paint-add-0179",
+            "name": "옵시디안 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 EQS-옵시디안 블랙.webp"
+          },
+          {
+            "id": "paint-add-0180",
+            "name": "폴라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 EQS-폴라 화이트.webp"
+          },
+          {
+            "id": "paint-add-0181",
+            "name": "하이테크 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/벤츠/마이바흐 EQS-하이테크 실버.webp"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "아우디",
+    "short": "AUDI",
+    "market": "import",
+    "ownBackground": true,
+    "cars": [
+            {
+        "name": "A3",
+        "detailModels": [
+          {
+            "name": "40 TFSI Quattro",
+            "trims": [
+              "Premium S Tronic"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0262",
+            "name": "글레이셔 화이트 메탈릭",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A3-글레이셔 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0263",
+            "name": "나바라 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A3-나바라 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0264",
+            "name": "디스트릭트 그린 메탈릭",
+            "hex": "#6F898D",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A3-디스트릭트 그린 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0265",
+            "name": "맨하탄 그레이 메탈릭",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A3-맨하탄 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0266",
+            "name": "미토스 블랙 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A3-미토스 블랙 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0267",
+            "name": "브릴리언트 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A3-브릴리언트 블랙.webp"
+          },
+          {
+            "id": "paint-add-0268",
+            "name": "아르코나 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A3-아르코나 화이트.webp"
+          },
+          {
+            "id": "paint-add-0269",
+            "name": "애로우 그레이 펄 이펙트",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A3-애로우 그레이 펄 이펙트.webp"
+          },
+          {
+            "id": "paint-add-0270",
+            "name": "프로그레시브 레드 메탈릭",
+            "hex": "#9b3038",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A3-프로그레시브 레드 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "A5",
+        "detailModels": [
+          {
+            "name": "40 TFSI Quattro",
+            "trims": [
+              "Advanced"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-273",
+            "name": "그레나딘 레드 메탈릭",
+            "hex": "#a92b31",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A5-그레나딘 레드 메탈릭.webp"
+          },
+          {
+            "id": "paint-274",
+            "name": "글레이셔 화이트 메탈릭",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A5-글레이셔 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-275",
+            "name": "데이토나 그레이 펄 이펙트",
+            "hex": "#7e858d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A5-데이토나 그레이 펄 이펙트.webp"
+          },
+          {
+            "id": "paint-276",
+            "name": "미토스 블랙 메탈릭",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A5-미토스 블랙 메탈릭.webp"
+          },
+          {
+            "id": "paint-277",
+            "name": "아르코나 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A5-아르코나 화이트.webp"
+          },
+          {
+            "id": "paint-278",
+            "name": "아스카리 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A5-아스카리 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-279",
+            "name": "크로노스 그레이 메탈릭",
+            "hex": "#7e858d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A5-크로노스 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-280",
+            "name": "퍼머먼트 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A5-퍼머먼트 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-281",
+            "name": "플로렛 실버 메탈릭",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A5-플로렛 실버 메탈릭.webp"
+          },
+          {
+            "id": "paint-282",
+            "name": "호라이즌 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A5-호라이즌 블루 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "A6",
+        "detailModels": [
+          {
+            "name": "45 TFSI Quattro",
+            "trims": [
+              "Advanced"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-283",
+            "name": "그레나딘 레드 메탈릭",
+            "hex": "#a92b31",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A6-그레나딘 레드 메탈릭.webp"
+          },
+          {
+            "id": "paint-284",
+            "name": "글레이셔 화이트 메탈릭",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A6-글레이셔 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-285",
+            "name": "미드나이트 그린 메탈릭",
+            "hex": "#476454",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A6-미드나이트 그린 메탈릭.webp"
+          },
+          {
+            "id": "paint-286",
+            "name": "미토스 블랙 메탈릭",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A6-미토스 블랙 메탈릭.webp"
+          },
+          {
+            "id": "paint-287",
+            "name": "아르코나 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A6-아르코나 화이트.webp"
+          },
+          {
+            "id": "paint-288",
+            "name": "크로노스 그레이 메탈릭",
+            "hex": "#7e858d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A6-크로노스 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-289",
+            "name": "퍼머먼트 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A6-퍼머먼트 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-290",
+            "name": "플로렛 실버 메탈릭",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/A6-플로렛 실버 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "Q3",
+        "detailModels": [
+          {
+            "name": "2.0 TFSI Quattro",
+            "trims": [
+              "S-Line"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0271",
+            "name": "글레이셔 화이트 메탈릭",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q3-글레이셔 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0272",
+            "name": "나바라 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q3-나바라 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0273",
+            "name": "말펠로 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q3-말펠로 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0274",
+            "name": "미토스 블랙 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q3-미토스 블랙 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0275",
+            "name": "세이지 그린 메탈릭",
+            "hex": "#6F898D",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q3-세이지 그린 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0276",
+            "name": "아르코나 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q3-아르코나 화이트.webp"
+          },
+          {
+            "id": "paint-add-0277",
+            "name": "애로우 그레이 펄 이펙트",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q3-애로우 그레이 펄 이펙트.webp"
+          },
+          {
+            "id": "paint-add-0278",
+            "name": "탐보라 그레이 메탈릭",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q3-탐보라 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0279",
+            "name": "프로그레시브 레드 메탈릭",
+            "hex": "#9b3038",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q3-프로그레시브 레드 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "Q4 e-tron",
+        "detailModels": [
+          {
+            "name": "45",
+            "trims": [
+              "A/T",
+              "Premium"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0280",
+            "name": "가이저 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q4 e-tron-가이저 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0281",
+            "name": "글레이셔 화이트 메탈릭",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q4 e-tron-글레이셔 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0282",
+            "name": "나바라 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q4 e-tron-나바라 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0283",
+            "name": "미토스 블랙 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q4 e-tron-미토스 블랙 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0284",
+            "name": "오로라 바이올렛 메탈릭",
+            "hex": "#6f6085",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q4 e-tron-오로라 바이올렛 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0285",
+            "name": "타이푼 그레이 메탈릭",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q4 e-tron-타이푼 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0286",
+            "name": "페블 그레이",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q4 e-tron-페블 그레이.webp"
+          },
+          {
+            "id": "paint-add-0287",
+            "name": "플로렛 실버 메탈릭",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q4 e-tron-플로렛 실버 메탈릭.webp"
+          }
+        ]
+      },
+            {
+        "name": "Q5",
+        "detailModels": [
+          {
+            "name": "40 TFSI Quattro",
+            "trims": [
+              "Advanced"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-291",
+            "name": "그레나딘 레드 메탈릭",
+            "hex": "#a92b31",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q5-그레나딘 레드 메탈릭.webp"
+          },
+          {
+            "id": "paint-292",
+            "name": "글레이셔 화이트 메탈릭",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q5-글레이셔 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-293",
+            "name": "나바라 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q5-나바라 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-294",
+            "name": "데이토나 그레이 펄 이펙트",
+            "hex": "#7e858d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q5-데이토나 그레이 펄 이펙트.webp"
+          },
+          {
+            "id": "paint-295",
+            "name": "디스트릭트 그린 메탈릭",
+            "hex": "#476454",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q5-디스트릭트 그린 메탈릭.webp"
+          },
+          {
+            "id": "paint-296",
+            "name": "미토스 블랙 메탈릭",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q5-미토스 블랙 메탈릭.webp"
+          },
+          {
+            "id": "paint-297",
+            "name": "사키르 골드 메탈릭",
+            "hex": "#9da5ae",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q5-사키르 골드 메탈릭.webp"
+          },
+          {
+            "id": "paint-298",
+            "name": "아르코나 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q5-아르코나 화이트.webp"
+          },
+          {
+            "id": "paint-299",
+            "name": "울트라 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q5-울트라 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-300",
+            "name": "플로렛 실버 메탈릭",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q5-플로렛 실버 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "Q6 e-tron",
+        "detailModels": [
+          {
+            "name": "EV 100kWh Quattro",
+            "trims": [
+              "Premium"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0288",
+            "name": "글레이셔 화이트 메탈릭",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q6 e-tron-글레이셔 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0289",
+            "name": "데이토나 그레이 펄 이펙트",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q6 e-tron-데이토나 그레이 펄 이펙트.webp"
+          },
+          {
+            "id": "paint-add-0290",
+            "name": "마그넷 그레이",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q6 e-tron-마그넷 그레이.webp"
+          },
+          {
+            "id": "paint-add-0291",
+            "name": "맨하탄 그레이 메탈릭",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q6 e-tron-맨하탄 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0292",
+            "name": "아스카리 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q6 e-tron-아스카리 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0293",
+            "name": "플라즈마 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q6 e-tron-플라즈마 블루 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "Q7",
+        "detailModels": [
+          {
+            "name": "50 TDI Quattro",
+            "trims": [
+              "A/T",
+              "Premium"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0294",
+            "name": "글레이셔 화이트 메탈릭",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q7-글레이셔 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0295",
+            "name": "미토스 블랙 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q7-미토스 블랙 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0296",
+            "name": "비쿠냐 베이지 메탈릭",
+            "hex": "#b9aa8e",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q7-비쿠냐 베이지 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0297",
+            "name": "사무라이 그레이 메탈릭",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q7-사무라이 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0298",
+            "name": "사키르 골드 메탈릭",
+            "hex": "#a98650",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q7-사키르 골드 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0299",
+            "name": "새틀라이트 실버 메탈릭",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q7-새틀라이트 실버 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0300",
+            "name": "웨이토모 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q7-웨이토모 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0301",
+            "name": "카라라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q7-카라라 화이트.webp"
+          },
+          {
+            "id": "paint-add-0302",
+            "name": "타마린드 브라운 메탈릭",
+            "hex": "#745646",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q7-타마린드 브라운 메탈릭.webp"
+          }
+        ]
+      },
+      {
+        "name": "SQ7",
+        "detailModels": [
+          {
+            "name": "4.0 TFSI Quattro",
+            "trims": [
+              "A/T"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0303",
+            "name": "글레이셔 화이트 메탈릭",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/SQ7-글레이셔 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0304",
+            "name": "데이토나 그레이 펄 이펙트",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/SQ7-데이토나 그레이 펄 이펙트.webp"
+          },
+          {
+            "id": "paint-add-0305",
+            "name": "미토스 블랙 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/SQ7-미토스 블랙 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0306",
+            "name": "사키르 골드 메탈릭",
+            "hex": "#a98650",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/SQ7-사키르 골드 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0307",
+            "name": "새틀라이트 실버 메탈릭",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/SQ7-새틀라이트 실버 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0308",
+            "name": "아스카리 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/SQ7-아스카리 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0309",
+            "name": "웨이토모 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/SQ7-웨이토모 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0310",
+            "name": "칠리 레드 메탈릭",
+            "hex": "#9b3038",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/SQ7-칠리 레드 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0311",
+            "name": "카라라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/SQ7-카라라 화이트.webp"
+          }
+        ]
+      },
+      {
+        "name": "Q8",
+        "detailModels": [
+          {
+            "name": "50 TDI Quattro",
+            "trims": [
+              "A/T",
+              "Premium"
+            ]
+          },
+          {
+            "name": "55 TFSI Quattro",
+            "trims": [
+              "A/T",
+              "Premium"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0312",
+            "name": "글레이셔 화이트 메탈릭",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q8-글레이셔 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0313",
+            "name": "데이토나 그레이 펄 이펙트",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q8-데이토나 그레이 펄 이펙트.webp"
+          },
+          {
+            "id": "paint-add-0314",
+            "name": "미토스 블랙 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q8-미토스 블랙 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0315",
+            "name": "사키르 골드 메탈릭",
+            "hex": "#a98650",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q8-사키르 골드 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0316",
+            "name": "새틀라이트 실버 메탈릭",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q8-새틀라이트 실버 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0317",
+            "name": "아스카리 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q8-아스카리 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0318",
+            "name": "웨이토모 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q8-웨이토모 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0319",
+            "name": "칠리 레드 메탈릭",
+            "hex": "#9b3038",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q8-칠리 레드 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0320",
+            "name": "카라라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/Q8-카라라 화이트.webp"
+          }
+        ]
+      },
+      {
+        "name": "RS Q8",
+        "detailModels": [
+          {
+            "name": "4.0 TFSI Quattro",
+            "trims": [
+              "Performance"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0321",
+            "name": "글레이셔 화이트 메탈릭",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/RS Q8 performance-글레이셔 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0322",
+            "name": "데이토나 그레이 펄 이펙트",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/RS Q8 performance-데이토나 그레이 펄 이펙트.webp"
+          },
+          {
+            "id": "paint-add-0323",
+            "name": "미토스 블랙 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/RS Q8 performance-미토스 블랙 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0324",
+            "name": "사키르 골드 메탈릭",
+            "hex": "#a98650",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/RS Q8 performance-사키르 골드 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0325",
+            "name": "새틀라이트 실버 메탈릭",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/RS Q8 performance-새틀라이트 실버 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0326",
+            "name": "아스카리 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/RS Q8 performance-아스카리 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0327",
+            "name": "웨이토모 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/RS Q8 performance-웨이토모 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0328",
+            "name": "칠리 레드 메탈릭",
+            "hex": "#9b3038",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/RS Q8 performance-칠리 레드 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0329",
+            "name": "카라라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/RS Q8 performance-카라라 화이트.webp"
+          }
+        ]
+      },
+      {
+        "name": "e-tron",
+        "detailModels": [
+          {
+            "name": "50 Quattro",
+            "trims": [
+              "A/T"
+            ]
+          },
+          {
+            "name": "55 Quattro",
+            "trims": [
+              "A/T"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0330",
+            "name": "데이토나 그레이 펄 이펙트",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/S e-tron GT-데이토나 그레이 펄 이펙트.webp"
+          },
+          {
+            "id": "paint-add-0331",
+            "name": "미토스 블랙 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/S e-tron GT-미토스 블랙 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0332",
+            "name": "아스카리 블루 메탈릭",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/S e-tron GT-아스카리 블루 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0333",
+            "name": "카라라 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/S e-tron GT-카라라 화이트.webp"
+          },
+          {
+            "id": "paint-add-0334",
+            "name": "케모라 그레이 메탈릭",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/S e-tron GT-케모라 그레이 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0335",
+            "name": "프로그레시브 레드 메탈릭",
+            "hex": "#9b3038",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/S e-tron GT-프로그레시브 레드 메탈릭.webp"
+          },
+          {
+            "id": "paint-add-0336",
+            "name": "플로렛 실버 메탈릭",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/아우디/S e-tron GT-플로렛 실버 메탈릭.webp"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "볼보",
+    "short": "VOLVO",
+    "market": "import",
+    "ownBackground": false,
+    "cars": [
+      {
+        "name": "XC40 하이브리드",
+        "detailModels": [
+          {
+            "name": "B4 AWD",
+            "trims": [
+              "Plus Bright",
+              "Ultra Bright",
+              "Ultra Dark"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0355",
+            "name": "데님 블루",
+            "hex": "#687077",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/XC40-데님 블루.webp"
+          },
+          {
+            "id": "paint-add-0357",
+            "name": "오닉스 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/XC40-오닉스 블랙.webp"
+          },
+          {
+            "id": "paint-add-0358",
+            "name": "오로라 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/XC40-오로라 실버.webp"
+          },
+          {
+            "id": "paint-add-0359",
+            "name": "크리스탈 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/XC40-크리스탈 화이트.webp"
+          },
+          {
+            "id": "paint-add-0360",
+            "name": "클라우드 블루",
+            "hex": "#B9C0C9",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/XC40-클라우드 블루.webp"
+          }
+        ]
+      },
+      {
+        "name": "XC60 하이브리드",
+        "detailModels": [
+          {
+            "name": "T8 AWD",
+            "trims": [
+              "Ultra Bright"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-249",
+            "name": "데님 블루",
+            "hex": "#687077",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/XC60-데님 블루.webp"
+          },
+          {
+            "id": "paint-250",
+            "name": "멀베리 레드",
+            "hex": "#716464",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/XC60-멀베리 레드.webp"
+          },
+          {
+            "id": "paint-251",
+            "name": "베이퍼 그레이",
+            "hex": "#7e858d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/XC60-베이퍼 그레이.webp"
+          },
+          {
+            "id": "paint-252",
+            "name": "오닉스 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/XC60-오닉스 블랙.webp"
+          },
+          {
+            "id": "paint-253",
+            "name": "오로라 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/XC60-오로라 실버.webp"
+          },
+          {
+            "id": "paint-254",
+            "name": "크리스탈 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/XC60-크리스탈 화이트.webp"
+          },
+          {
+            "id": "paint-255",
+            "name": "포레스트 레이크",
+            "hex": "#666F6F",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/XC60-포레스트 레이크.webp"
+          }
+        ]
+      },
+      {
+        "name": "XC90 하이브리드",
+        "detailModels": [
+          {
+            "name": "T8 AWD",
+            "trims": [
+              "Ultra Bright",
+              "Black Edition",
+              "Ultra Dark"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-256",
+            "name": "데님 블루",
+            "hex": "#687077",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/XC90-데님 블루.webp"
+          },
+          {
+            "id": "paint-257",
+            "name": "멀베리 레드",
+            "hex": "#716464",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/XC90-멀베리 레드.webp"
+          },
+          {
+            "id": "paint-258",
+            "name": "베이퍼 그레이",
+            "hex": "#7e858d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/XC90-베이퍼 그레이.webp"
+          },
+          {
+            "id": "paint-259",
+            "name": "브라이트 더스크",
+            "hex": "#D4D2D1",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/XC90-브라이트 더스크.webp"
+          },
+          {
+            "id": "paint-260",
+            "name": "오닉스 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/XC90-오닉스 블랙.webp"
+          },
+          {
+            "id": "paint-261",
+            "name": "오로라 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/XC90-오로라 실버.webp"
+          },
+          {
+            "id": "paint-262",
+            "name": "크리스탈 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/XC90-크리스탈 화이트.webp"
+          }
+        ]
+      },
+      {
+        "name": "S90",
+        "detailModels": [
+          {
+            "name": "B5",
+            "trims": [
+              "Plus Bright",
+              "Ultra Bright",
+              "Ultra Dark"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0337",
+            "name": "데님 블루",
+            "hex": "#687077",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/S90-데님 블루.webp"
+          },
+          {
+            "id": "paint-add-0338",
+            "name": "멀베리 레드",
+            "hex": "#716464",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/S90-멀베리 레드.webp"
+          },
+          {
+            "id": "paint-add-0339",
+            "name": "베이퍼 그레이",
+            "hex": "#A9A7A6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/S90-베이퍼 그레이.webp"
+          },
+          {
+            "id": "paint-add-0340",
+            "name": "브라이트 더스크",
+            "hex": "#D4D2D1",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/S90-브라이트 더스크.webp"
+          },
+          {
+            "id": "paint-add-0341",
+            "name": "오닉스 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/S90-오닉스 블랙.webp"
+          },
+          {
+            "id": "paint-add-0342",
+            "name": "크리스탈 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/S90-크리스탈 화이트.webp"
+          }
+        ]
+      },
+      {
+        "name": "EX30",
+        "detailModels": [
+          {
+            "name": "Single Motor Extended Range",
+            "trims": [
+              "Core",
+              "Ultra"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0343",
+            "name": "베이퍼 그레이",
+            "hex": "#929697",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/EX30-베이퍼 그레이.webp"
+          },
+          {
+            "id": "paint-add-0344",
+            "name": "오닉스 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/EX30-오닉스 블랙.webp"
+          },
+          {
+            "id": "paint-add-0345",
+            "name": "크리스탈 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/EX30-크리스탈 화이트.webp"
+          },
+          {
+            "id": "paint-add-0346",
+            "name": "클라우드 블루",
+            "hex": "#C9CFD6",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/EX30-클라우드 블루.webp"
+          }
+        ]
+      },
+      {
+        "name": "EX90",
+        "detailModels": [
+          {
+            "name": "Twin Motor",
+            "trims": [
+              "Plus (7-Seat)",
+              "Ultra (6-Seat)",
+              "Ultra (7-Seat)"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-add-0347",
+            "name": "데님 블루",
+            "hex": "#687077",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/EX90-데님 블루.webp"
+          },
+          {
+            "id": "paint-add-0348",
+            "name": "멀베리 레드",
+            "hex": "#716464",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/EX90-멀베리 레드.webp"
+          },
+          {
+            "id": "paint-add-0349",
+            "name": "베이퍼 그레이",
+            "hex": "#929697",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/EX90-베이퍼 그레이.webp"
+          },
+          {
+            "id": "paint-add-0350",
+            "name": "샌드 듄",
+            "hex": "#ACA59B",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/EX90-샌드 듄.webp"
+          },
+          {
+            "id": "paint-add-0351",
+            "name": "오닉스 블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/EX90-오닉스 블랙.webp"
+          },
+          {
+            "id": "paint-add-0352",
+            "name": "오로라 실버",
+            "hex": "#CECED0",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/EX90-오로라 실버.webp"
+          },
+          {
+            "id": "paint-add-0353",
+            "name": "크리스탈 화이트",
+            "hex": "#EEF0F0",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/EX90-크리스탈 화이트.webp"
+          },
+          {
+            "id": "paint-add-0354",
+            "name": "포레스트 레이크",
+            "hex": "#8B9191",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/볼보/EX90-포레스트 레이크.webp"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "테슬라",
+    "short": "TESLA",
+    "market": "import",
+    "ownBackground": false,
+    "cars": [
+      {
+        "name": "모델3",
+        "detailModels": [
+          {
+            "name": "standard RWD",
+            "trims": [
+              "A/T"
+            ]
+          },
+          {
+            "name": "Premium Long Range RWD",
+            "trims": [
+              "A/T"
+            ]
+          },
+          {
+            "name": "Performance AWD",
+            "trims": [
+              "A/T"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-301",
+            "name": "다이아몬드 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/테슬라/모델3-다이아몬드 블랙.webp"
+          },
+          {
+            "id": "paint-302",
+            "name": "스텔스 그레이",
+            "hex": "#5B5A5F",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/테슬라/모델3-스텔스 그레이.webp"
+          },
+          {
+            "id": "paint-303",
+            "name": "펄 화이트 멀티코트",
+            "hex": "#F2F4F8",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/테슬라/모델3-펄 화이트 멀티코트.webp"
+          }
+        ]
+      },
+      {
+        "name": "모델Y",
+        "detailModels": [
+          {
+            "name": "Premium RWD",
+            "trims": [
+              "A/T"
+            ]
+          },
+          {
+            "name": "Premium Long Range AWD",
+            "trims": [
+              "A/T"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-310",
+            "name": "글레이셔 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/테슬라/모델Y-글레이셔 블루.webp"
+          },
+          {
+            "id": "paint-311",
+            "name": "다이아몬드 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/테슬라/모델Y-다이아몬드 블랙.webp"
+          },
+          {
+            "id": "paint-312",
+            "name": "스텔스 그레이",
+            "hex": "#494954",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/테슬라/모델Y-스텔스 그레이.webp"
+          },
+          {
+            "id": "paint-313",
+            "name": "울트라 레드",
+            "hex": "#a92b31",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/테슬라/모델Y-울트라 레드.webp"
+          },
+          {
+            "id": "paint-314",
+            "name": "퀵실버",
+            "hex": "#5B5A5E",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/테슬라/모델Y-퀵실버.webp"
+          },
+          {
+            "id": "paint-315",
+            "name": "펄 화이트 멀티코트",
+            "hex": "#F2F4F8",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/테슬라/모델Y-펄 화이트 멀티코트.webp"
+          }
+        ]
+      },
+      {
+        "name": "모델Y L",
+        "detailModels": [
+          {
+            "name": "L AWD",
+            "trims": [
+              "A/T"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-304",
+            "name": "글레이셔 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/테슬라/모델Y L-글레이셔 블루.webp"
+          },
+          {
+            "id": "paint-305",
+            "name": "다이아몬드 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/테슬라/모델Y L-다이아몬드 블랙.webp"
+          },
+          {
+            "id": "paint-306",
+            "name": "스텔스 그레이",
+            "hex": "#373942",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/테슬라/모델Y L-스텔스 그레이.webp"
+          },
+          {
+            "id": "paint-307",
+            "name": "울트라 레드",
+            "hex": "#a92b31",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/테슬라/모델Y L-울트라 레드.webp"
+          },
+          {
+            "id": "paint-308",
+            "name": "코스믹 실버",
+            "hex": "#B0AAAF",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/테슬라/모델Y L-코스믹 실버.webp"
+          },
+          {
+            "id": "paint-309",
+            "name": "펄 화이트 멀티코트",
+            "hex": "#F2F4F8",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/테슬라/모델Y L-펄 화이트 멀티코트.webp"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "랜드로버",
+    "short": "LAND ROVER",
+    "market": "import",
+    "ownBackground": false,
+    "cars": [
+      {
+        "name": "더 뉴 레인지로버",
+        "detailModels": [
+          {
+            "name": "P530",
+            "trims": [
+              "Autobiography"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-lr-01-01",
+            "name": "UNV 콘스텔레이션 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-UNV 콘스텔레이션 블루.webp"
+          },
+          {
+            "id": "paint-lr-01-02",
+            "name": "UNV 플럭스 실버",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-UNV 플럭스 실버.webp"
+          },
+          {
+            "id": "paint-lr-01-03",
+            "name": "바레신 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-바레신 블루.webp"
+          },
+          {
+            "id": "paint-lr-01-04",
+            "name": "바투미 골드",
+            "hex": "#a98650",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-바투미 골드.webp"
+          },
+          {
+            "id": "paint-lr-01-05",
+            "name": "벨그라비아 그린",
+            "hex": "#42634f",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-벨그라비아 그린.webp"
+          },
+          {
+            "id": "paint-lr-01-06",
+            "name": "벨로시티 블루 글로스 피니시",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-벨로시티 블루 글로스 피니시.webp"
+          },
+          {
+            "id": "paint-lr-01-07",
+            "name": "벨로시티 블루 새틴 피니시",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-벨로시티 블루 새틴 피니시.webp"
+          },
+          {
+            "id": "paint-lr-01-08",
+            "name": "브리티시 레이싱 그린 새틴 피니시",
+            "hex": "#42634f",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-브리티시 레이싱 그린 새틴 피니시.webp"
+          },
+          {
+            "id": "paint-lr-01-09",
+            "name": "브리티시 레이싱 그린",
+            "hex": "#42634f",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-브리티시 레이싱 그린.webp"
+          },
+          {
+            "id": "paint-lr-01-10",
+            "name": "산토리니 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-산토리니 블랙.webp"
+          },
+          {
+            "id": "paint-lr-01-11",
+            "name": "샤랑트 그레이",
+            "hex": "#403E3D",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-샤랑트 그레이.webp"
+          },
+          {
+            "id": "paint-lr-01-12",
+            "name": "선셋 골드 글로스 피니시",
+            "hex": "#a98650",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-선셋 골드 글로스 피니시.webp"
+          },
+          {
+            "id": "paint-lr-01-13",
+            "name": "선셋 골드 새틴 피니시",
+            "hex": "#a98650",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-선셋 골드 새틴 피니시.webp"
+          },
+          {
+            "id": "paint-lr-01-14",
+            "name": "아이거 그레이",
+            "hex": "#7e858d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-아이거 그레이.webp"
+          },
+          {
+            "id": "paint-lr-01-15",
+            "name": "아이시 화이트 글로스 피니시",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-아이시 화이트 글로스 피니시.webp"
+          },
+          {
+            "id": "paint-lr-01-16",
+            "name": "아이시 화이트 새틴 피니시",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-아이시 화이트 새틴 피니시.webp"
+          },
+          {
+            "id": "paint-lr-01-17",
+            "name": "애미시스트 그레이 퍼플 글로스 피니시",
+            "hex": "#7e858d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-애미시스트 그레이 퍼플 글로스 피니시.webp"
+          },
+          {
+            "id": "paint-lr-01-18",
+            "name": "에테리얼 프로스트 실버 글로스 피니시",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-에테리얼 프로스트 실버 글로스 피니시.webp"
+          },
+          {
+            "id": "paint-lr-01-19",
+            "name": "에테리얼 프로스트 실버 새틴 피니시",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-에테리얼 프로스트 실버 새틴 피니시.webp"
+          },
+          {
+            "id": "paint-lr-01-20",
+            "name": "오스투니 펄 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-오스투니 펄 화이트.webp"
+          },
+          {
+            "id": "paint-lr-01-21",
+            "name": "옵시디언 블랙 글로스 피니시",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-옵시디언 블랙 글로스 피니시.webp"
+          },
+          {
+            "id": "paint-lr-01-22",
+            "name": "옵시디언 블랙 새틴 피니시",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-옵시디언 블랙 새틴 피니시.webp"
+          },
+          {
+            "id": "paint-lr-01-23",
+            "name": "이오니안 실버 글로스 피니시",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-이오니안 실버 글로스 피니시.webp"
+          },
+          {
+            "id": "paint-lr-01-24",
+            "name": "이오니안 실버 새틴 피니시",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-이오니안 실버 새틴 피니시.webp"
+          },
+          {
+            "id": "paint-lr-01-25",
+            "name": "카르파티안 그레이",
+            "hex": "#3D3D3D",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-카르파티안 그레이.webp"
+          },
+          {
+            "id": "paint-lr-01-26",
+            "name": "토르말린 브라운 글로스 피니시",
+            "hex": "#725246",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-토르말린 브라운 글로스 피니시.webp"
+          },
+          {
+            "id": "paint-lr-01-27",
+            "name": "토르말린 브라운 새틴 피니시",
+            "hex": "#725246",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-토르말린 브라운 새틴 피니시.webp"
+          },
+          {
+            "id": "paint-lr-01-28",
+            "name": "페트롤릭스 블루 글로스 피니시",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-페트롤릭스 블루 글로스 피니시.webp"
+          },
+          {
+            "id": "paint-lr-01-29",
+            "name": "플럭스 실버 새틴 피니시",
+            "hex": "#b9bec5",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-플럭스 실버 새틴 피니시.webp"
+          },
+          {
+            "id": "paint-lr-01-30",
+            "name": "후지 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/더 뉴 레인지로버-후지 화이트.webp"
+          }
+        ]
+      },
+      {
+        "name": "디펜더 90",
+        "detailModels": [
+          {
+            "name": "D250",
+            "trims": [
+              "XS Edition"
+            ]
+          },
+          {
+            "name": "P400",
+            "trims": [
+              "X"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-lr-04-01",
+            "name": "곤드와나 스톤",
+            "hex": "#9a968b",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/디펜더 90-곤드와나 스톤.webp"
+          },
+          {
+            "id": "paint-lr-04-02",
+            "name": "보라스코 그레이",
+            "hex": "#7e858d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/디펜더 90-보라스코 그레이.webp"
+          },
+          {
+            "id": "paint-lr-04-03",
+            "name": "산토리니 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/디펜더 90-산토리니 블랙.webp"
+          },
+          {
+            "id": "paint-lr-04-04",
+            "name": "울스톤 그린",
+            "hex": "#42634f",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/디펜더 90-울스톤 그린.webp"
+          },
+          {
+            "id": "paint-lr-04-05",
+            "name": "태즈먼 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/디펜더 90-태즈먼 블루.webp"
+          },
+          {
+            "id": "paint-lr-04-06",
+            "name": "후지 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/디펜더 90-후지 화이트.webp"
+          }
+        ]
+      },
+      {
+        "name": "디펜더 110",
+        "detailModels": [
+          {
+            "name": "D250",
+            "trims": [
+              "X-Dynamic SE"
+            ]
+          },
+          {
+            "name": "D300",
+            "trims": [
+              "X-Dynamic HSE"
+            ]
+          },
+          {
+            "name": "P300",
+            "trims": [
+              "X-Dynamic SE"
+            ]
+          },
+          {
+            "name": "P400",
+            "trims": [
+              "Trophy Edition",
+              "X"
+            ]
+          },
+          {
+            "name": "P635",
+            "trims": [
+              "OCTA",
+              "OCTA Black"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-lr-02-01",
+            "name": "곤드와나 스톤",
+            "hex": "#9a968b",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/디펜더 110-곤드와나 스톤.webp"
+          },
+          {
+            "id": "paint-lr-02-02",
+            "name": "보라스코 그레이",
+            "hex": "#7e858d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/디펜더 110-보라스코 그레이.webp"
+          },
+          {
+            "id": "paint-lr-02-03",
+            "name": "산토리니 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/디펜더 110-산토리니 블랙.webp"
+          },
+          {
+            "id": "paint-lr-02-04",
+            "name": "울스톤 그린",
+            "hex": "#42634f",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/디펜더 110-울스톤 그린.webp"
+          },
+          {
+            "id": "paint-lr-02-05",
+            "name": "태즈먼 블루",
+            "hex": "#315d88",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/디펜더 110-태즈먼 블루.webp"
+          },
+          {
+            "id": "paint-lr-02-06",
+            "name": "후지 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/디펜더 110-후지 화이트.webp"
+          }
+        ]
+      },
+      {
+        "name": "디펜더 130",
+        "detailModels": [
+          {
+            "name": "P400 MHEV",
+            "trims": [
+              "Outbound",
+              "X-Dynamic HSE",
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-lr-03-01",
+            "name": "곤드와나 스톤",
+            "hex": "#9a968b",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/디펜더 130-곤드와나 스톤.webp"
+          },
+          {
+            "id": "paint-lr-03-02",
+            "name": "보라스코 그레이",
+            "hex": "#7e858d",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/디펜더 130-보라스코 그레이.webp"
+          },
+          {
+            "id": "paint-lr-03-03",
+            "name": "산토리니 블랙",
+            "hex": "#17191c",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/디펜더 130-산토리니 블랙.webp"
+          },
+          {
+            "id": "paint-lr-03-04",
+            "name": "세도나 레드",
+            "hex": "#a92b31",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/디펜더 130-세도나 레드.webp"
+          },
+          {
+            "id": "paint-lr-03-05",
+            "name": "울스톤 그린",
+            "hex": "#42634f",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/디펜더 130-울스톤 그린.webp"
+          },
+          {
+            "id": "paint-lr-03-06",
+            "name": "후지 화이트",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/랜드로버/디펜더 130-후지 화이트.webp"
+          }
+        ]
+      }
+      
+    ]
+  },
+  {
+    "name": "폭스바겐",
+    "short": "VOLKSWAGEN",
+    "market": "import",
+    "ownBackground": false,
+    "cars": [
+      {
+        "name": "ID.4",
+        "detailModels": [
+          {
+            "name": "EV 82kWh",
+            "trims": [
+              "Pro Lite",
+              "Pro"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-vw-01-01",
+            "name": "그레나딜라 블랙 메탈릭&블랙",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/폭스바겐/ID.4-그레나딜라 블랙 메탈릭&블랙.webp"
+          },
+          {
+            "id": "paint-vw-01-02",
+            "name": "글레이셔 화이트 메탈릭&블랙",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/폭스바겐/ID.4-글레이셔 화이트 메탈릭&블랙.webp"
+          },
+          {
+            "id": "paint-vw-01-03",
+            "name": "문스톤 그레이&블랙",
+            "hex": "#64686D",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/폭스바겐/ID.4-문스톤 그레이&블랙.webp"
+          },
+          {
+            "id": "paint-vw-01-04",
+            "name": "블루 더스크 메탈릭&블랙",
+            "hex": "#25336F",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/폭스바겐/ID.4-블루 더스크 메탈릭&블랙.webp"
+          }
+        ]
+      },
+      {
+        "name": "ID.5",
+        "detailModels": [
+          {
+            "name": "EV 82.8kWh",
+            "trims": [
+              "Pro Lite",
+              "Pro"
+            ]
+          }
+        ],
+        "paints": [
+          {
+            "id": "paint-vw-02-01",
+            "name": "그레나딜라 블랙 메탈릭",
+            "hex": "#222222",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/폭스바겐/ID.5-그레나딜라 블랙 메탈릭.webp"
+          },
+          {
+            "id": "paint-vw-02-02",
+            "name": "글레이셔 화이트 메탈릭",
+            "hex": "#f3f2ed",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/폭스바겐/ID.5-글레이셔 화이트 메탈릭.webp"
+          },
+          {
+            "id": "paint-vw-02-03",
+            "name": "문스톤 그레이",
+            "hex": "#7D8186",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/폭스바겐/ID.5-문스톤 그레이.webp"
+          },
+          {
+            "id": "paint-vw-02-04",
+            "name": "블루 더스크 메탈릭",
+            "hex": "#1C2B68",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/폭스바겐/ID.5-블루 더스크 메탈릭.webp"
+          },
+          {
+            "id": "paint-vw-02-05",
+            "name": "킹스 레드 메탈릭",
+            "hex": "#9b2327",
+            "border": "#cfd5dc",
+            "image": "images/vehicles/폭스바겐/ID.5-킹스 레드 메탈릭.webp"
+          }
+        ]
+      }
+    ]
+  },
+{
+  "name": "포르쉐",
+  "short": "PORSCHE",
+  "market": "import",
+  "ownBackground": false,
+  "cars": [
+    {
+      "name": "마칸",
+      "detailModels": [
+        {
+          "name": "마칸 GTS 일렉트릭",
+          "trims": [
+            "A/T"
+          ]
+        }
+      ],
+      "paints": [
+        {
+          "id": "paint-luxury-1-1-1",
+          "name": "돌로마이트 실버 메탈릭",
+          "hex": "#898b9a",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/마칸-돌로마이트 실버 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-1-2",
+          "name": "루가노 블루",
+          "hex": "#0061bb",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/마칸-루가노 블루.webp"
+        },
+        {
+          "id": "paint-luxury-1-1-3",
+          "name": "볼케이노 그레이 메탈릭",
+          "hex": "#2a292a",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/마칸-볼케이노 그레이 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-1-4",
+          "name": "블랙",
+          "hex": "#080504",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/마칸-블랙.webp"
+        },
+        {
+          "id": "paint-luxury-1-1-5",
+          "name": "슬레이트 그레이 네오",
+          "hex": "#636571",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/마칸-슬레이트 그레이 네오.webp"
+        },
+        {
+          "id": "paint-luxury-1-1-6",
+          "name": "아이스 그레이 메탈릭",
+          "hex": "#a8a3ad",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/마칸-아이스 그레이 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-1-7",
+          "name": "어벤추린 그린 메탈릭",
+          "hex": "#646055",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/마칸-어벤추린 그린 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-1-8",
+          "name": "오크 그린 메탈릭 네오",
+          "hex": "#30552a",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/마칸-오크 그린 메탈릭 네오.webp"
+        },
+        {
+          "id": "paint-luxury-1-1-9",
+          "name": "제트 블랙 메탈릭",
+          "hex": "#141313",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/마칸-제트 블랙 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-1-10",
+          "name": "젠션 블루 메탈릭",
+          "hex": "#213981",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/마칸-젠션 블루 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-1-11",
+          "name": "카민 레드",
+          "hex": "#92000c",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/마칸-카민 레드.webp"
+        },
+        {
+          "id": "paint-luxury-1-1-12",
+          "name": "크레용",
+          "hex": "#a8a39f",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/마칸-크레용.webp"
+        },
+        {
+          "id": "paint-luxury-1-1-13",
+          "name": "프로방스",
+          "hex": "#766b7f",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/마칸-프로방스.webp"
+        },
+        {
+          "id": "paint-luxury-1-1-14",
+          "name": "프로즌블루 메탈릭",
+          "hex": "#6a9ab4",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/마칸-프로즌블루 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-1-15",
+          "name": "화이트",
+          "hex": "#cecccc",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/마칸-화이트.webp"
+        }
+      ]
+    },
+    {
+      "name": "카이엔",
+      "detailModels": [
+        {
+          "name": "카이엔",
+          "trims": [
+            "A/T"
+          ]
+        }
+      ],
+      "paints": [
+        {
+          "id": "paint-luxury-1-2-1",
+          "name": "돌로마이트 실버 메탈릭",
+          "hex": "#626473",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔-돌로마이트 실버 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-2-2",
+          "name": "바나듐 그레이 메탈릭",
+          "hex": "#515665",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔-바나듐 그레이 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-2-3",
+          "name": "아크틱 그레이",
+          "hex": "#575562",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔-아크틱 그레이.webp"
+        },
+        {
+          "id": "paint-luxury-1-2-4",
+          "name": "알가르브 블루 메탈릭",
+          "hex": "#070913",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔-알가르브 블루 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-2-5",
+          "name": "카라라 화이트 메탈릭",
+          "hex": "#d2cfd2",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔-카라라 화이트 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-2-6",
+          "name": "카민 레드",
+          "hex": "#9f000d",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔-카민 레드.webp"
+        },
+        {
+          "id": "paint-luxury-1-2-7",
+          "name": "크레용",
+          "hex": "#a7a29e",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔-크레용.webp"
+        },
+        {
+          "id": "paint-luxury-1-2-8",
+          "name": "크로마이트 블랙 메탈릭",
+          "hex": "#141518",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔-크로마이트 블랙 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-2-9",
+          "name": "화이트",
+          "hex": "#ccc8c9",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔-화이트.webp"
+        }
+      ]
+    },
+    {
+      "name": "카이엔 EV",
+      "detailModels": [
+        {
+          "name": "카이엔 일렉트릭",
+          "trims": [
+            "A/T"
+          ]
+        },
+        {
+          "name": "카이엔 S 일렉트릭",
+          "trims": [
+            "A/T"
+          ]
+        },
+        {
+          "name": "카이엔 터보 일렉트릭",
+          "trims": [
+            "A/T"
+          ]
+        }
+      ],
+      "paints": [
+        {
+          "id": "paint-luxury-1-3-1",
+          "name": "나팔리 블루 메탈릭",
+          "hex": "#244064",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔 EV-나팔리 블루 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-3-2",
+          "name": "돌로마이트 실버 메탈릭",
+          "hex": "#b9bac0",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔 EV-돌로마이트 실버 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-3-3",
+          "name": "마데이라 골드 메탈릭",
+          "hex": "#bb7b11",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔 EV-마데이라 골드 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-3-4",
+          "name": "몬테베르데 메탈릭",
+          "hex": "#7e765d",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔 EV-몬테베르데 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-3-5",
+          "name": "미스틱 그린 메탈릭",
+          "hex": "#7b8c84",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔 EV-미스틱 그린 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-3-6",
+          "name": "바나듐 그레이 메탈릭",
+          "hex": "#63666b",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔 EV-바나듐 그레이 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-3-7",
+          "name": "슬레이트 그레이 네오",
+          "hex": "#666666",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔 EV-슬레이트 그레이 네오.webp"
+        },
+        {
+          "id": "paint-luxury-1-3-8",
+          "name": "오크 그린 메탈릭 네오",
+          "hex": "#314b2e",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔 EV-오크 그린 메탈릭 네오.webp"
+        },
+        {
+          "id": "paint-luxury-1-3-9",
+          "name": "일가르브 블루 메탈릭",
+          "hex": "#363f50",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔 EV-일가르브 블루 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-3-10",
+          "name": "카라라 화이트 메탈릭",
+          "hex": "#e4e2dc",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔 EV-카라라 화이트 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-3-11",
+          "name": "크로마이트 블랙 메탈릭",
+          "hex": "#2b2c2f",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔 EV-크로마이트 블랙 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-3-12",
+          "name": "페일 블루 메탈릭",
+          "hex": "#485e6a",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔 EV-페일 블루 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-3-13",
+          "name": "화이트",
+          "hex": "#e8e8e6",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/카이엔 EV-화이트.webp"
+        }
+      ]
+    },
+    {
+      "name": "타이칸",
+      "detailModels": [
+        {
+          "name": "타이칸",
+          "trims": [
+            "A/T"
+          ]
+        },
+        {
+          "name": "타이칸 4",
+          "trims": [
+            "A/T",
+            "Black Edition"
+          ]
+        },
+        {
+          "name": "타이칸 4S",
+          "trims": [
+            "A/T",
+            "Black Edition"
+          ]
+        },
+        {
+          "name": "타이칸 터보",
+          "trims": [
+            "A/T"
+          ]
+        },
+        {
+          "name": "타이칸 터보 S",
+          "trims": [
+            "A/T"
+          ]
+        },
+        {
+          "name": "타이칸 터보 GT",
+          "trims": [
+            "A/T"
+          ]
+        }
+      ],
+      "paints": [
+        {
+          "id": "paint-luxury-1-4-1",
+          "name": "페일 블루 메탈릭",
+          "hex": "#344a5f",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/타이칸-페일 블루 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-4-2",
+          "name": "넵튠 블루",
+          "hex": "#054572",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/타이칸-넵튠 블루.webp"
+        },
+        {
+          "id": "paint-luxury-1-4-3",
+          "name": "돌로마이트 실버 메탈릭",
+          "hex": "#9c9ca8",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/타이칸-돌로마이트 실버 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-4-4",
+          "name": "볼케이노 그레이 메탈릭",
+          "hex": "#454449",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/타이칸-볼케이노 그레이 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-4-5",
+          "name": "블랙",
+          "hex": "#0a0c0f",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/타이칸-블랙.webp"
+        },
+        {
+          "id": "paint-luxury-1-4-6",
+          "name": "셰이드 그린 메탈릭",
+          "hex": "#9ab6aa",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/타이칸-셰이드 그린 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-4-7",
+          "name": "슬레이트 그레이 네오",
+          "hex": "#7b818c",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/타이칸-슬레이트 그레이 네오.webp"
+        },
+        {
+          "id": "paint-luxury-1-4-8",
+          "name": "아이스 그레이 메탈릭",
+          "hex": "#d2cdd0",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/타이칸-아이스 그레이 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-4-9",
+          "name": "오크 그린 메탈릭 네오",
+          "hex": "#435143",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/타이칸-오크 그린 메탈릭 네오.webp"
+        },
+        {
+          "id": "paint-luxury-1-4-10",
+          "name": "제트 블랙 메탈릭",
+          "hex": "#514d4c",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/타이칸-제트 블랙 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-4-11",
+          "name": "젠션 블루 메탈릭",
+          "hex": "#515f85",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/타이칸-젠션 블루 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-4-12",
+          "name": "카민 레드",
+          "hex": "#b82833",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/타이칸-카민 레드.webp"
+        },
+        {
+          "id": "paint-luxury-1-4-13",
+          "name": "크레용",
+          "hex": "#beb4ab",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/타이칸-크레용.webp"
+        },
+        {
+          "id": "paint-luxury-1-4-14",
+          "name": "퍼플 스카이 메탈릭",
+          "hex": "#481f99",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/타이칸-퍼플 스카이 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-4-15",
+          "name": "프로방스",
+          "hex": "#8c8092",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/타이칸-프로방스.webp"
+        },
+        {
+          "id": "paint-luxury-1-4-16",
+          "name": "프로즌베리 메탈릭",
+          "hex": "#a48685",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/타이칸-프로즌베리 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-4-17",
+          "name": "프로즌블루 메탈릭",
+          "hex": "#7dadc5",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/타이칸-프로즌블루 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-4-18",
+          "name": "화이트",
+          "hex": "#dfd9d9",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/타이칸-화이트.webp"
+        }
+      ]
+    },
+    {
+      "name": "파나메라",
+      "detailModels": [
+        {
+          "name": "파나메라 4",
+          "trims": [
+            "PDK",
+            "Red Exclusive"
+          ]
+        }
+      ],
+      "paints": [
+        {
+          "id": "paint-luxury-1-5-1",
+          "name": "돌로마이트 실버 메탈릭",
+          "hex": "#9294a1",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/파나메라-돌로마이트 실버 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-5-2",
+          "name": "루가노 블루",
+          "hex": "#0062b3",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/파나메라-루가노 블루.webp"
+        },
+        {
+          "id": "paint-luxury-1-5-3",
+          "name": "마데이라 골드 메탈릭",
+          "hex": "#9a6534",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/파나메라-마데이라 골드 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-5-4",
+          "name": "볼케이노 그레이 메탈릭",
+          "hex": "#494b51",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/파나메라-볼케이노 그레이 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-5-5",
+          "name": "블랙",
+          "hex": "#1c2227",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/파나메라-블랙.webp"
+        },
+        {
+          "id": "paint-luxury-1-5-6",
+          "name": "슬레이트 그레이 네오",
+          "hex": "#65656f",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/파나메라-슬레이트 그레이 네오.webp"
+        },
+        {
+          "id": "paint-luxury-1-5-7",
+          "name": "아이스 그레이 메탈릭",
+          "hex": "#d9d4d9",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/파나메라-아이스 그레이 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-5-8",
+          "name": "어벤추린 그린 메탈릭",
+          "hex": "#6a6761",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/파나메라-어벤추린 그린 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-5-9",
+          "name": "오크 그린 메탈릭 네오",
+          "hex": "#254327",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/파나메라-오크 그린 메탈릭 네오.webp"
+        },
+        {
+          "id": "paint-luxury-1-5-10",
+          "name": "제트 블랙 메탈릭",
+          "hex": "#12141a",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/파나메라-제트 블랙 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-5-11",
+          "name": "젠션 블루 메탈릭",
+          "hex": "#172a66",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/파나메라-젠션 블루 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-5-12",
+          "name": "카라라 화이트 메탈릭",
+          "hex": "#e3e1e2",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/파나메라-카라라 화이트 메탈릭.webp"
+        },
+        {
+          "id": "paint-luxury-1-5-13",
+          "name": "카민 레드",
+          "hex": "#bf353d",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/파나메라-카민 레드.webp"
+        },
+        {
+          "id": "paint-luxury-1-5-14",
+          "name": "크레용",
+          "hex": "#c0b8af",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/파나메라-크레용.webp"
+        },
+        {
+          "id": "paint-luxury-1-5-15",
+          "name": "프로방스",
+          "hex": "#8c7f91",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/파나메라-프로방스.webp"
+        },
+        {
+          "id": "paint-luxury-1-5-16",
+          "name": "화이트",
+          "hex": "#f3f2ed",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/포르쉐/파나메라-화이트.webp"
+        }
+      ]
+    }
+  ]
+},
+{
+  "name": "벤틀리",
+  "short": "BENTLEY",
+  "market": "import",
+  "ownBackground": false,
+  "cars": [
+    {
+      "name": "벤테이가",
+      "detailModels": [
+        {
+          "name": "4.0 V8",
+          "trims": [
+            "SPEED"
+          ]
+        }
+      ],
+      "paints": [
+        {
+          "id": "paint-luxury-2-1-1",
+          "name": "그래나이트",
+          "hex": "#333331",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/벤테이가-그래나이트.webp"
+        },
+        {
+          "id": "paint-luxury-2-1-2",
+          "name": "그래비티 그레이",
+          "hex": "#707271",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/벤테이가-그래비티 그레이.webp"
+        },
+        {
+          "id": "paint-luxury-2-1-3",
+          "name": "글래시어 화이트",
+          "hex": "#d4d5ce",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/벤테이가-글래시어 화이트.webp"
+        },
+        {
+          "id": "paint-luxury-2-1-4",
+          "name": "다크 사파이어",
+          "hex": "#151619",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/벤테이가-다크 사파이어.webp"
+        },
+        {
+          "id": "paint-luxury-2-1-5",
+          "name": "문빔",
+          "hex": "#bcc1c4",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/벤테이가-문빔.webp"
+        },
+        {
+          "id": "paint-luxury-2-1-6",
+          "name": "버던트",
+          "hex": "#33433e",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/벤테이가-버던트.webp"
+        },
+        {
+          "id": "paint-luxury-2-1-7",
+          "name": "벨루가",
+          "hex": "#040605",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/벤테이가-벨루가.webp"
+        },
+        {
+          "id": "paint-luxury-2-1-8",
+          "name": "세인트 제임스 레드",
+          "hex": "#820000",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/벤테이가-세인트 제임스 레드.webp"
+        },
+        {
+          "id": "paint-luxury-2-1-9",
+          "name": "썬더",
+          "hex": "#2a3033",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/벤테이가-썬더.webp"
+        },
+        {
+          "id": "paint-luxury-2-1-10",
+          "name": "오닉스",
+          "hex": "#0d0d0d",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/벤테이가-오닉스.webp"
+        },
+        {
+          "id": "paint-luxury-2-1-11",
+          "name": "오팔라이트",
+          "hex": "#899287",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/벤테이가-오팔라이트.webp"
+        },
+        {
+          "id": "paint-luxury-2-1-12",
+          "name": "포르토피노",
+          "hex": "#2e4a61",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/벤테이가-포르토피노.webp"
+        }
+      ]
+    },
+    {
+      "name": "컨티넨탈 GT",
+      "detailModels": [
+        {
+          "name": "4.0 PHEV",
+          "trims": [
+            "Core",
+            "Speed",
+            "Mulliner",
+            "Azure"
+          ]
+        }
+      ],
+      "paints": [
+        {
+          "id": "paint-luxury-2-2-1",
+          "name": "글래시어 화이트",
+          "hex": "#cacbc2",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/컨티넨탈 GT-글래시어 화이트.webp"
+        },
+        {
+          "id": "paint-luxury-2-2-2",
+          "name": "다크 사파이어",
+          "hex": "#0f1114",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/컨티넨탈 GT-다크 사파이어.webp"
+        },
+        {
+          "id": "paint-luxury-2-2-3",
+          "name": "문빔",
+          "hex": "#9ea3a7",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/컨티넨탈 GT-문빔.webp"
+        },
+        {
+          "id": "paint-luxury-2-2-4",
+          "name": "벨루가",
+          "hex": "#0b0d0c",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/컨티넨탈 GT-벨루가.webp"
+        },
+        {
+          "id": "paint-luxury-2-2-5",
+          "name": "세인트 제임스 레드",
+          "hex": "#830005",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/컨티넨탈 GT-세인트 제임스 레드.webp"
+        },
+        {
+          "id": "paint-luxury-2-2-6",
+          "name": "썬더",
+          "hex": "#394045",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/컨티넨탈 GT-썬더.webp"
+        },
+        {
+          "id": "paint-luxury-2-2-7",
+          "name": "오닉스",
+          "hex": "#111111",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/컨티넨탈 GT-오닉스.webp"
+        }
+      ]
+    },
+    {
+      "name": "플라잉스퍼",
+      "detailModels": [
+        {
+          "name": "4.0 V8",
+          "trims": [
+            "Core",
+            "Azure"
+          ]
+        }
+      ],
+      "paints": [
+        {
+          "id": "paint-luxury-2-3-1",
+          "name": "그래나이트",
+          "hex": "#4a4a48",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/플라잉스퍼-그래나이트.webp"
+        },
+        {
+          "id": "paint-luxury-2-3-2",
+          "name": "그래비티 그레이",
+          "hex": "#525454",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/플라잉스퍼-그래비티 그레이.webp"
+        },
+        {
+          "id": "paint-luxury-2-3-3",
+          "name": "글래시어 화이트",
+          "hex": "#dadbd5",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/플라잉스퍼-글래시어 화이트.webp"
+        },
+        {
+          "id": "paint-luxury-2-3-4",
+          "name": "다크 사파이어",
+          "hex": "#353738",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/플라잉스퍼-다크 사파이어.webp"
+        },
+        {
+          "id": "paint-luxury-2-3-5",
+          "name": "문빔",
+          "hex": "#cdd3d5",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/플라잉스퍼-문빔.webp"
+        },
+        {
+          "id": "paint-luxury-2-3-6",
+          "name": "벨루가",
+          "hex": "#202221",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/플라잉스퍼-벨루가.webp"
+        },
+        {
+          "id": "paint-luxury-2-3-7",
+          "name": "비리디언",
+          "hex": "#2f3535",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/플라잉스퍼-비리디언.webp"
+        },
+        {
+          "id": "paint-luxury-2-3-8",
+          "name": "세인트 제임스 레드",
+          "hex": "#930008",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/플라잉스퍼-세인트 제임스 레드.webp"
+        },
+        {
+          "id": "paint-luxury-2-3-9",
+          "name": "썬더",
+          "hex": "#3d4448",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/플라잉스퍼-썬더.webp"
+        },
+        {
+          "id": "paint-luxury-2-3-10",
+          "name": "오닉스",
+          "hex": "#323232",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/플라잉스퍼-오닉스.webp"
+        },
+        {
+          "id": "paint-luxury-2-3-11",
+          "name": "포르토피노",
+          "hex": "#3d6080",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/벤틀리/플라잉스퍼-포르토피노.webp"
+        }
+      ]
+    }
+  ]
+},
+{
+  "name": "롤스로이스",
+  "short": "ROLLS-ROYCE",
+  "market": "import",
+  "ownBackground": false,
+  "cars": [
+    {
+      "name": "스펙터",
+      "listImage": "images/vehicles/롤스로이스/스펙터 대표이미지.webp",
+      "detailModels": [
+        {
+          "name": "스펙터",
+          "trims": [
+            "A/T",
+            "Black Badge"
+          ]
+        }
+      ],
+      "paints": [
+        {
+          "id": "paint-luxury-3-1-1",
+          "name": "다크 에메랄드",
+          "hex": "#36453e",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/스펙터-다크 에메랄드.webp"
+        },
+        {
+          "id": "paint-luxury-3-1-2",
+          "name": "다키스트 텅스텐",
+          "hex": "#32383d",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/스펙터-다키스트 텅스텐.webp"
+        },
+        {
+          "id": "paint-luxury-3-1-3",
+          "name": "미드나이트 사파이어",
+          "hex": "#364250",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/스펙터-미드나이트 사파이어.webp"
+        },
+        {
+          "id": "paint-luxury-3-1-4",
+          "name": "벨라돈나 퍼플",
+          "hex": "#423744",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/스펙터-벨라돈나 퍼플.webp"
+        },
+        {
+          "id": "paint-luxury-3-1-5",
+          "name": "보헤미안 레드",
+          "hex": "#443434",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/스펙터-보헤미안 레드.webp"
+        },
+        {
+          "id": "paint-luxury-3-1-6",
+          "name": "블랙 다이아몬드",
+          "hex": "#15171b",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/스펙터-블랙 다이아몬드.webp"
+        },
+        {
+          "id": "paint-luxury-3-1-7",
+          "name": "앤드러사이트",
+          "hex": "#3c4043",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/스펙터-앤드러사이트.webp"
+        },
+        {
+          "id": "paint-luxury-3-1-8",
+          "name": "이과수 블루",
+          "hex": "#324356",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/스펙터-이과수 블루.webp"
+        },
+        {
+          "id": "paint-luxury-3-1-9",
+          "name": "잉글리시 화이트",
+          "hex": "#d8dbd8",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/스펙터-잉글리시 화이트.webp"
+        },
+        {
+          "id": "paint-luxury-3-1-10",
+          "name": "주빌리 실버",
+          "hex": "#737574",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/스펙터-주빌리 실버.webp"
+        },
+        {
+          "id": "paint-luxury-3-1-11",
+          "name": "템페스트 그레이",
+          "hex": "#6c6d6a",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/스펙터-템페스트 그레이.webp"
+        }
+      ]
+    },
+    {
+      "name": "팬텀",
+      "listImage": "images/vehicles/롤스로이스/팬텀 대표이미지.webp",
+      "detailModels": [
+        {
+          "name": "6.75 V12",
+          "trims": [
+            "A/T"
+          ]
+        }
+      ],
+      "paints": [
+        {
+          "id": "paint-luxury-3-2-1",
+          "name": "다크 에메랄드",
+          "hex": "#183b2b",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/팬텀-다크 에메랄드.webp"
+        },
+        {
+          "id": "paint-luxury-3-2-2",
+          "name": "다키스트 텅스텐",
+          "hex": "#252c35",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/팬텀-다키스트 텅스텐.webp"
+        },
+        {
+          "id": "paint-luxury-3-2-3",
+          "name": "리리컬 코퍼",
+          "hex": "#25242b",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/팬텀-리리컬 코퍼.webp"
+        },
+        {
+          "id": "paint-luxury-3-2-4",
+          "name": "미드나이트 사파이어",
+          "hex": "#132b4a",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/팬텀-미드나이트 사파이어.webp"
+        },
+        {
+          "id": "paint-luxury-3-2-5",
+          "name": "벨라돈나 퍼플",
+          "hex": "#32283e",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/팬텀-벨라돈나 퍼플.webp"
+        },
+        {
+          "id": "paint-luxury-3-2-6",
+          "name": "보헤미안 레드",
+          "hex": "#351b24",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/팬텀-보헤미안 레드.webp"
+        },
+        {
+          "id": "paint-luxury-3-2-7",
+          "name": "블랙 다이아몬드",
+          "hex": "#1b1f24",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/팬텀-블랙 다이아몬드.webp"
+        },
+        {
+          "id": "paint-luxury-3-2-8",
+          "name": "실버",
+          "hex": "#a5a9aa",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/팬텀-실버.webp"
+        },
+        {
+          "id": "paint-luxury-3-2-9",
+          "name": "앤드러사이트",
+          "hex": "#31343e",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/팬텀-앤드러사이트.webp"
+        },
+        {
+          "id": "paint-luxury-3-2-10",
+          "name": "이과수 블루",
+          "hex": "#42586e",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/팬텀-이과수 블루.webp"
+        },
+        {
+          "id": "paint-luxury-3-2-11",
+          "name": "잉글리시 화이트",
+          "hex": "#dbdddc",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/팬텀-잉글리시 화이트.webp"
+        },
+        {
+          "id": "paint-luxury-3-2-12",
+          "name": "주빌리 실버",
+          "hex": "#6d7174",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/팬텀-주빌리 실버.webp"
+        },
+        {
+          "id": "paint-luxury-3-2-13",
+          "name": "템페스트 그레이",
+          "hex": "#62676e",
+          "border": "#cfd5dc",
+          "image": "images/vehicles/롤스로이스/팬텀-템페스트 그레이.webp"
+        }
+      ]
+    }
+  ]
+}
+];
+  const brands = vehicleCatalog.map(brand => ({
+    ...brand,
+    cars: brand.cars.map(car => car.name)
+  }));
+
+  const MARKETS_FOR_REVIEWS =  ["import"];
+
+  // 출고 후기 → STEP 01 차량 목록 연결. 현재 등록된 차량만 연결하고,
+  // 후기의 모델명/제목을 함께 확인해 일반/하이브리드/전기 모델 혼선을 방지합니다.
+  // 후기의 차종명에 자주 쓰이는 다른 표기/오타를 공식 차량명으로 통일합니다.
+  // 일반 모델과 하이브리드/EV의 구분은 아래 차량 매칭 단계에서 계속 검사합니다.
+  const reviewVehicleNormalize = text => String(text || "")
+    .toLocaleLowerCase("ko-KR")
+    .replace(/h[.\s-]*e[.\s-]*v\b|hybrid/gi, "하이브리드")
+    .replace(/[^a-z0-9가-힣]/g, "")
+    .replace(/펠리세이드|펠리사이드|팰리사이드|팔리세이드/g, "팰리세이드")
+    .replace(/소나타/g, "쏘나타")
+    .replace(/산타페/g, "싼타페")
+    .replace(/소렌토|쏘랭토/g, "쏘렌토")
+    .replace(/아반테/g, "아반떼")
+    .replace(/그렌저|그렌져|그랜져/g, "그랜저")
+    .replace(/투산/g, "투싼");
+
+  // 정확한 매칭에 실패한 경우에만 긴 차종명에서 1글자 오타를 허용합니다.
+  // 짧은 모델명(EV3/EV4, G80/G90 등)은 서로 혼동하기 쉬워 추측하지 않습니다.
+  function reviewVehicleOneEditApart(first, second) {
+    if (Math.abs(first.length - second.length) > 1 || first === second) return false;
+    let a = 0, b = 0, edits = 0;
+    while (a < first.length && b < second.length) {
+      if (first[a] === second[b]) { a++; b++; continue; }
+      if (++edits > 1) return false;
+      if (first.length >= second.length) a++;
+      if (second.length >= first.length) b++;
+    }
+    return edits + Number(a < first.length || b < second.length) === 1;
+  }
+
+  function reviewVehicleTypoScore(text, alias, sourceScore) {
+    if (!text || alias.length < 5) return 0;
+    // 모델명 또는 제목 앞부분(브랜드명이 포함될 수 있음)에서만 비교합니다.
+    for (let pos = 0; pos <= Math.min(12, text.length - 4); pos++) {
+      for (const size of [alias.length - 1, alias.length, alias.length + 1]) {
+        if (size < 4 || pos + size > text.length) continue;
+        if (reviewVehicleOneEditApart(text.slice(pos, pos + size), alias)) {
+          return sourceScore + alias.length * 2 - pos;
+        }
+      }
+    }
+    return 0;
+  }
+
+  function findVehicleByReviewTypo(review, modelText, titleText, wantsHybrid, wantsElectric) {
+    const explicitBrand = reviewVehicleNormalize(review.brand);
+    const brandAliases = {
+      "메르세데스벤츠": "벤츠", "mercedesbenz": "벤츠",
+      "kg모빌리티": "KGM", "쌍용": "KGM", "쌍용자동차": "KGM"
+    };
+    const normalizedBrand = reviewVehicleNormalize(brandAliases[explicitBrand] || review.brand);
+    const maybachReview = /maybach|마이바흐/i.test(`${review.model || ""} ${review.title || ""}`);
+    const markets = typeof MARKETS_FOR_REVIEWS === "undefined" ? [DEFAULT_MARKET] : MARKETS_FOR_REVIEWS;
+    const candidates = [];
+
+    for (const brand of vehicleCatalog.filter(item => markets.includes(item.market))) {
+      const registeredBrand = reviewVehicleNormalize(brand.name);
+      if (normalizedBrand && !normalizedBrand.includes(registeredBrand) &&
+          !registeredBrand.includes(normalizedBrand)) continue;
+      for (const car of brand.cars) {
+        const name = car.name;
+        if (brand.name === "벤츠" && maybachReview && !name.startsWith("마이바흐")) continue;
+        const hybrid = /하이브리드/.test(name);
+        const electric = /(?:\sEV$|\sEVX$|일렉트릭|일렉트리파이드)/i.test(name);
+        if (brand.market === "domestic" && (hybrid !== wantsHybrid || electric !== wantsElectric)) continue;
+        const baseName = name
+          .replace(/\s+하이브리드(?:\s+E-Tech)?$/i, "")
+          .replace(/\s+(?:EV|EVX|일렉트릭)$/i, "")
+          .replace(/^일렉트리파이드\s+/i, "");
+        const aliases = [...new Set([reviewVehicleNormalize(name), reviewVehicleNormalize(baseName)])];
+        let score = 0;
+        for (const alias of aliases) {
+          score = Math.max(score,
+            reviewVehicleTypoScore(modelText, alias, 100),
+            reviewVehicleTypoScore(titleText, alias, 60));
+        }
+        if (score) candidates.push({ brandName: brand.name, carName: name, market: brand.market, score });
+      }
+    }
+    candidates.sort((a, b) => b.score - a.score);
+    if (!candidates.length) return null;
+    // 비슷한 점수로 두 차량이 후보가 되면 잘못된 차량으로 보내지 않습니다.
+    if (candidates[1] && candidates[0].score - candidates[1].score < 8) return null;
+    const { brandName, carName, market } = candidates[0];
+    return { brandName, carName, market };
+  }
+
+  function findVehicleFromReview(review) {
+    if (!review || typeof review !== "object") return null;
+    const modelText = reviewVehicleNormalize(review.model);
+    const titleText = reviewVehicleNormalize(review.title);
+    const both = `${modelText} ${titleText}`;
+    if (!modelText && !titleText) return null;
+
+    const wantsHybrid = /하이브리드|hev|hybrid|e[-\s]?tech/i.test(`${review.model || ""} ${review.title || ""}`);
+    const wantsElectric = /(?:\bEV\b|일렉트릭|일렉트리파이드|전동화|전기차|EVX)/i.test(`${review.model || ""} ${review.title || ""}`);
+    let best = null;
+
+    const brandAliases = {
+      "메르세데스벤츠": "벤츠", "mercedesbenz": "벤츠",
+      "kg모빌리티": "KGM", "쌍용": "KGM", "쌍용자동차": "KGM"
+    };
+    const explicitBrand = reviewVehicleNormalize(review.brand);
+    const normalizedBrand = reviewVehicleNormalize(brandAliases[explicitBrand] || review.brand);
+    const maybachReview = /maybach|마이바흐/i.test(`${review.model || ""} ${review.title || ""}`);
+    const importAliases = {
+      "벤츠": {
+        "E클래스 아방가르드": ["E200", "E300", "E250", "E220", "E클래스"],
+        "E클래스 익스클루시브": ["E200 익스클루시브", "E300 익스클루시브", "E클래스 익스클루시브"],
+        "S클래스": ["S450", "S500", "S580"],
+        "마이바흐 GLS": ["MAYBACH GLS", "GLS 600", "GLS600"]
+      }
+    };
+
+    for (const brand of vehicleCatalog.filter(item => MARKETS_FOR_REVIEWS.includes(item.market))) {
+      if (normalizedBrand && normalizedBrand !== reviewVehicleNormalize(brand.name)) continue;
+      for (const car of brand.cars) {
+        const name = car.name;
+        // 마이바흐는 일반 GLS와 구분해 연결합니다.
+        if (brand.name === "벤츠" && maybachReview && !name.startsWith("마이바흐")) continue;
+
+        const hybrid = /하이브리드/.test(name);
+        const electric = /(?:\sEV$|\sEVX$|일렉트릭|일렉트리파이드)/i.test(name);
+        if (brand.market === "domestic" && (hybrid !== wantsHybrid || electric !== wantsElectric)) continue;
+
+        const exact = reviewVehicleNormalize(name);
+        const base = reviewVehicleNormalize(name
+          .replace(/\s+하이브리드(?:\s+E-Tech)?$/i, "")
+          .replace(/\s+(?:EV|EVX|일렉트릭)$/i, "")
+          .replace(/^일렉트리파이드\s+/i, ""));
+        const extraAliases = {
+          "포터2": ["포터"],
+          "렉스턴 뉴 아레나": ["렉스턴"],
+          "트랙스 크로스오버": ["트랙스"],
+          "팰리세이드": ["펠리세이드"]
+        };
+        const aliases = [exact, base, ...(extraAliases[name] || []).map(reviewVehicleNormalize),
+          ...((importAliases[brand.name] || {})[name] || []).map(reviewVehicleNormalize)]
+          .filter(word => word.length >= 2);
+        let score = 0;
+        for (const word of aliases) {
+          if (modelText.includes(word)) score = Math.max(score, 100 + word.length * 2 + (word === exact ? 30 : 0));
+          else if (titleText.includes(word)) score = Math.max(score, 60 + word.length * 2 + (word === exact ? 15 : 0));
+        }
+        if (!score) continue;
+        // 짧은 차종명(G80, K5 등)이 타 브랜드 모델명 안에서 우연히 겹치지 않도록 조정.
+        const explicitBrand = reviewVehicleNormalize(review.brand);
+        const registeredBrand = reviewVehicleNormalize(brand.name);
+        const isSameBrand = !explicitBrand || explicitBrand.includes(registeredBrand) ||
+          registeredBrand.includes(explicitBrand) ||
+          (brand.name === "KGM" && ["kg모빌리티", "쌍용", "쌍용자동차"].some(alias => explicitBrand.includes(alias)));
+        if (!isSameBrand) continue;
+        if (!best || score > best.score) best = { brandName: brand.name, carName: name, market: brand.market, score };
+      }
+    }
+    return best ? { brandName: best.brandName, carName: best.carName, market: best.market } :
+      findVehicleByReviewTypo(review, modelText, titleText, wantsHybrid, wantsElectric);
+  }
+
+  function openReviewVehicleList(vehicle) {
+    if (!vehicle || typeof vehicle !== "object") return;
+    const brand = vehicleCatalog.find(item => item.name === vehicle.brandName && item.market === vehicle.market);
+    if (!brand || !brand.cars.some(car => car.name === vehicle.carName)) return;
+
+    const previousSnapshot = { ...state };
+    // 후기에서 연결된 차종의 외장 색상 단계로 바로 이동합니다.
+    state.step = 1;
+    state.market = brand.market;
+    state.brandName = brand.name;
+    state.carName = vehicle.carName;
+    state.paintId = ""; // 외장 색상은 사용자가 직접 선택합니다.
+    resetSelectionsAfterVehicleChange();
+    recordWizardNavigation(previousSnapshot);
+    render();
+
+    // 기존 차량 카드 클릭과 동일한 상세 영역 위치에 맞춰 이동합니다.
+    // 후기가 가진 색상 정보로 임의 선택하지 않고 선택 버튼을 노출합니다.
+    scrollToNextSelection(".wizard-car-card", "start", 76);
+  }
+
+  window.autogenieReviewVehicleBridge = {
+    findReviewVehicle: findVehicleFromReview,
+    openVehicleList: openReviewVehicleList
+  };
+
+  const fallbackImage = "images/g_g90.png";
+
+  /* ==============================
+     방문자 보안 정보 수집
+  ============================== */
+
+  const AUTOJINI_VISITOR_ID_KEY = "autojiniVisitorId";
+  const AUTOJINI_ENTRY_TIME_KEY = "autojiniEntryTime";
+
+  function getAutojiniVisitorId() {
+    let visitorId = "";
+
+    try {
+      visitorId = localStorage.getItem(AUTOJINI_VISITOR_ID_KEY) || "";
+    } catch (error) {
+      console.warn("방문자 ID를 읽지 못했습니다.", error);
+    }
+
+    if (!visitorId) {
+      visitorId = window.crypto && typeof window.crypto.randomUUID === "function"
+        ? window.crypto.randomUUID()
+        : `visitor_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+
+      try {
+        localStorage.setItem(AUTOJINI_VISITOR_ID_KEY, visitorId);
+      } catch (error) {
+        console.warn("방문자 ID를 저장하지 못했습니다.", error);
+      }
+    }
+
+    return visitorId;
+  }
+
+  function initializeAutojiniEntryTime() {
+    try {
+      if (!sessionStorage.getItem(AUTOJINI_ENTRY_TIME_KEY)) {
+        sessionStorage.setItem(AUTOJINI_ENTRY_TIME_KEY, String(Date.now()));
+      }
+    } catch (error) {
+      console.warn("페이지 접속 시간을 저장하지 못했습니다.", error);
+    }
+  }
+
+  function getAutojiniElapsedSeconds() {
+    try {
+      const entryTime = Number(sessionStorage.getItem(AUTOJINI_ENTRY_TIME_KEY));
+
+      if (!entryTime || Number.isNaN(entryTime)) return 0;
+
+      return Math.max(0, Math.floor((Date.now() - entryTime) / 1000));
+    } catch (error) {
+      console.warn("제출 소요시간을 계산하지 못했습니다.", error);
+      return 0;
+    }
+  }
+
+  function getAutojiniSecurityData() {
+    const securityData = {
+      visitorId: getAutojiniVisitorId(),
+      elapsedSeconds: getAutojiniElapsedSeconds()
+    };
+
+    console.log("AUTOJINI 견적 보안정보", securityData);
+    return securityData;
+  }
+
+  initializeAutojiniEntryTime();
+
+  // Google Apps Script를 웹앱으로 배포한 뒤 아래 주소만 교체하세요.
+  // 예: https://script.google.com/macros/s/AKfycb.../exec
+  const GOOGLE_APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzHeVUiq4WjdycA0cdfDDspGpb4JDQzCNGZu8pX5f9k9vyaJfs7R9JHqUAG_NTlKK-ifA/exec";
+
+  /* =========================================================
+    방문 유입 로그 + 실제 사이트 체류시간 측정
+
+    - visitorId: 같은 브라우저 사용자를 구분하는 ID (기존 값 재사용)
+    - visitSessionId: 이번 사이트 방문 1회를 구분하는 ID
+    - 실제 화면에 사이트가 보이는 시간만 체류시간으로 누적
+    - 다른 앱/탭 이동, 홈 화면, 화면 잠금 시간은 제외
+    - 탭/사이트를 닫았다가 다시 접속하면 새 방문으로 기록
+  ========================================================= */
+
+  const AUTOJINI_VISIT_LOGGED_KEY = "autogenie_import_visit_logged";
+  const AUTOJINI_VISIT_SESSION_ID_KEY = "autogenie_import_visit_session_id";
+  const AUTOJINI_VISIT_HEARTBEAT_MS = 10000;
+
+  let autojiniVisitSessionId = "";
+  let autojiniVisitActiveMs = 0;
+  let autojiniVisitActiveStartedAt = null;
+  let autojiniVisitLastSentSeconds = -1;
+  let autojiniVisitHeartbeatTimer = null;
+  let autojiniVisitReady = false;
+
+  function createAutojiniVisitSessionId() {
+    return window.crypto && typeof window.crypto.randomUUID === "function"
+      ? window.crypto.randomUUID()
+      : `visit_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+  }
+
+  function getOrCreateAutojiniVisitSessionId() {
+    try {
+      const savedId = sessionStorage.getItem(AUTOJINI_VISIT_SESSION_ID_KEY) || "";
+
+      if (savedId) {
+        return savedId;
+      }
+
+      const newId = createAutojiniVisitSessionId();
+      sessionStorage.setItem(AUTOJINI_VISIT_SESSION_ID_KEY, newId);
+
+      // 예전 코드에서 방문 완료 표시만 남아 있는 경우
+      // 새 세션 ID에 맞춰 방문로그를 다시 생성합니다.
+      sessionStorage.removeItem(AUTOJINI_VISIT_LOGGED_KEY);
+
+      return newId;
+    } catch (error) {
+      console.warn("방문 세션 ID를 저장하지 못했습니다.", error);
+      return createAutojiniVisitSessionId();
+    }
+  }
+
+  function getReferrerDomain(referrer) {
+    if (!referrer) {
+      return "직접 접속";
+    }
+
+    try {
+      return new URL(referrer).hostname.replace(/^www\./, "");
+    } catch (error) {
+      return "외부 유입";
+    }
+  }
+
+  function getDeviceType() {
+    const userAgent = navigator.userAgent.toLowerCase();
+
+    const isTablet =
+      /ipad|tablet|playbook|silk/.test(userAgent) ||
+      (/android/.test(userAgent) && !/mobile/.test(userAgent));
+
+    if (isTablet) {
+      return "태블릿";
+    }
+
+    if (/android|iphone|ipod|windows phone|mobile/.test(userAgent)) {
+      return "모바일";
+    }
+
+    return "PC";
+  }
+
+  function getBrowserName() {
+    const userAgent = navigator.userAgent;
+
+    if (/Whale\//i.test(userAgent)) return "Whale";
+    if (/Edg\//i.test(userAgent)) return "Edge";
+    if (/SamsungBrowser\//i.test(userAgent)) return "Samsung Internet";
+    if (/OPR\//i.test(userAgent)) return "Opera";
+    if (/Firefox\//i.test(userAgent)) return "Firefox";
+    if (/Chrome\//i.test(userAgent)) return "Chrome";
+    if (/Safari\//i.test(userAgent)) return "Safari";
+
+    return "기타";
+  }
+
+  async function getPublicIpAddress() {
+    const ipServices = [
+      {
+        url: "https://api.ipify.org?format=json",
+        getIp: data => data.ip
+      },
+      {
+        url: "https://api64.ipify.org?format=json",
+        getIp: data => data.ip
+      },
+      {
+        url: "https://icanhazip.com/",
+        getIp: data => data
+      }
+    ];
+
+    for (const service of ipServices) {
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => {
+        controller.abort();
+      }, 3500);
+
+      try {
+        const response = await fetch(service.url, {
+          method: "GET",
+          cache: "no-store",
+          signal: controller.signal
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        let responseData;
+
+        if (service.url.includes("icanhazip.com")) {
+          responseData = await response.text();
+        } else {
+          responseData = await response.json();
+        }
+
+        const ipAddress = String(
+          service.getIp(responseData) || ""
+        ).trim();
+
+        if (ipAddress) {
+          return ipAddress;
+        }
+      } catch (error) {
+        console.warn(
+          `IP 조회 실패: ${service.url}`,
+          error
+        );
+      } finally {
+        window.clearTimeout(timeoutId);
+      }
+    }
+
+    return "조회 실패";
+  }
+
+  function postAutojiniVisitData(data, preferBeacon = false) {
+    if (!GOOGLE_APPS_SCRIPT_URL) {
+      return Promise.resolve(false);
+    }
+
+    const body = new URLSearchParams();
+
+    Object.entries(data).forEach(([key, value]) => {
+      if (value === undefined || value === null) {
+        return;
+      }
+
+      body.append(key, String(value));
+    });
+
+    if (
+      preferBeacon &&
+      typeof navigator.sendBeacon === "function"
+    ) {
+      try {
+        const blob = new Blob(
+          [body.toString()],
+          { type: "application/x-www-form-urlencoded;charset=UTF-8" }
+        );
+
+        if (navigator.sendBeacon(GOOGLE_APPS_SCRIPT_URL, blob)) {
+          return Promise.resolve(true);
+        }
+      } catch (error) {
+        console.warn("체류시간 Beacon 전송 실패", error);
+      }
+    }
+
+    return fetch(GOOGLE_APPS_SCRIPT_URL, {
+      method: "POST",
+      mode: "no-cors",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+      },
+      body: body.toString(),
+      keepalive: true
+    })
+      .then(() => true)
+      .catch(error => {
+        console.error("방문 로그 전송 실패:", error);
+        return false;
+      });
+  }
+
+  async function sendVisitLog() {
+    autojiniVisitSessionId = getOrCreateAutojiniVisitSessionId();
+
+    try {
+      if (sessionStorage.getItem(AUTOJINI_VISIT_LOGGED_KEY) === "true") {
+        return true;
+      }
+    } catch (error) {
+      console.warn("방문 로그 저장 여부를 읽지 못했습니다.", error);
+    }
+
+    const referrer = document.referrer || "";
+    const ipAddress = await getPublicIpAddress();
+
+    const success = await postAutojiniVisitData({
+      requestType: "page_visit",
+      visitedAt: new Date().toISOString(),
+      customerName: "",
+      ipAddress,
+      referrerDomain: getReferrerDomain(referrer),
+      referrerUrl: referrer || "직접 접속",
+      visitorId: getAutojiniVisitorId(),
+      visitSessionId: autojiniVisitSessionId,
+      deviceType: getDeviceType(),
+      browserName: getBrowserName(),
+      ...window.AutoGenieTraffic?.getFields()
+    });
+
+    if (success) {
+      try {
+        sessionStorage.setItem(AUTOJINI_VISIT_LOGGED_KEY, "true");
+      } catch (error) {
+        console.warn("방문 로그 저장 여부를 기록하지 못했습니다.", error);
+      }
+    }
+
+    return success;
+  }
+
+  function resumeAutojiniVisitTime() {
+    if (
+      !autojiniVisitReady ||
+      document.visibilityState !== "visible" ||
+      autojiniVisitActiveStartedAt !== null
+    ) {
+      return;
+    }
+
+    autojiniVisitActiveStartedAt = performance.now();
+  }
+
+  function pauseAutojiniVisitTime() {
+    if (autojiniVisitActiveStartedAt === null) {
+      return;
+    }
+
+    autojiniVisitActiveMs +=
+      performance.now() - autojiniVisitActiveStartedAt;
+
+    autojiniVisitActiveStartedAt = null;
+  }
+
+  function getAutojiniVisitActiveSeconds() {
+    let totalMs = autojiniVisitActiveMs;
+
+    if (autojiniVisitActiveStartedAt !== null) {
+      totalMs += performance.now() - autojiniVisitActiveStartedAt;
+    }
+
+    return Math.max(0, Math.floor(totalMs / 1000));
+  }
+
+  function sendAutojiniVisitDuration(preferBeacon = false) {
+    if (!autojiniVisitReady || !autojiniVisitSessionId) {
+      return;
+    }
+
+    const activeSeconds = getAutojiniVisitActiveSeconds();
+
+    if (
+      !preferBeacon &&
+      activeSeconds === autojiniVisitLastSentSeconds
+    ) {
+      return;
+    }
+
+    autojiniVisitLastSentSeconds = activeSeconds;
+
+    postAutojiniVisitData(
+      {
+        requestType: "page_visit_update",
+        visitorId: getAutojiniVisitorId(),
+        visitSessionId: autojiniVisitSessionId,
+        activeSeconds
+      },
+      preferBeacon
+    );
+  }
+
+  function startAutojiniVisitHeartbeat() {
+    if (autojiniVisitHeartbeatTimer) {
+      window.clearInterval(autojiniVisitHeartbeatTimer);
+    }
+
+    autojiniVisitHeartbeatTimer = window.setInterval(() => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+
+      sendAutojiniVisitDuration(false);
+    }, AUTOJINI_VISIT_HEARTBEAT_MS);
+  }
+
+  function handleAutojiniVisibilityChange() {
+    if (document.visibilityState === "hidden") {
+      pauseAutojiniVisitTime();
+      sendAutojiniVisitDuration(true);
+      return;
+    }
+
+    resumeAutojiniVisitTime();
+  }
+
+  function handleAutojiniPageHide() {
+    pauseAutojiniVisitTime();
+    sendAutojiniVisitDuration(true);
+  }
+
+  function handleAutojiniPageShow() {
+    resumeAutojiniVisitTime();
+  }
+
+  async function initializeAutojiniVisitTracking() {
+    const visitSaved = await sendVisitLog();
+
+    if (!visitSaved) {
+      return;
+    }
+
+    autojiniVisitReady = true;
+
+    if (document.visibilityState === "visible") {
+      autojiniVisitActiveStartedAt = performance.now();
+    }
+
+    startAutojiniVisitHeartbeat();
+  }
+
+  document.addEventListener(
+    "visibilitychange",
+    handleAutojiniVisibilityChange,
+    { passive: true }
+  );
+
+  window.addEventListener(
+    "pagehide",
+    handleAutojiniPageHide,
+    { passive: true }
+  );
+
+  window.addEventListener(
+    "pageshow",
+    handleAutojiniPageShow,
+    { passive: true }
+  );
+
+  window.addEventListener(
+    "load",
+    initializeAutojiniVisitTracking,
+    { once: true }
+  );
+
+  const trims = ["전체 모델", "2.5 가솔린", "3.5 가솔린", "3.5 가솔린 AWD"];
+  const rateOptions = ["10%", "20%", "30%", "40%"];
+  const mileageOptions = ["연 1만km", "연 2만km", "연 3만km", "연 4만km", "무제한", "상담 후 결정"];
+
+  // 사이트에는 제조사 공식 트림명을 그대로 표시하고,
+  // 관리자 메일 전송 시에만 한글 보조명을 함께 붙입니다.
+  const trimMailNameMap = {
+    "Techno": "테크노",
+    "Iconic": "아이코닉",
+    "Esprit Alpine": "에스프리 알핀",
+    "Esprit Alpine 1955": "에스프리 알핀 1955",
+    "Escapade 파노라마 선루프 버전": "에스카파드 파노라마 선루프 버전",
+    "Escapade 루프박스 버전": "에스카파드 루프박스 버전",
+    "Modern": "모던",
+    "Modern Plus": "모던 플러스",
+    "Premium": "프리미엄",
+    "Prestige": "프레스티지",
+    "Inspiration": "인스퍼레이션",
+    "Exclusive": "익스클루시브",
+    "Black Exterior": "블랙 익스테리어",
+    "N Line": "엔 라인",
+    "GT-Line": "지티 라인",
+    "M Sport": "엠 스포츠",
+    "M Sport Pro": "엠 스포츠 프로",
+    "M Sport Pro Special Edition": "엠 스포츠 프로 스페셜 에디션",
+    "M Sport M Performance Parts Edition": "엠 스포츠 엠 퍼포먼스 파츠 에디션",
+    "AMG Line": "에이엠지 라인",
+    "Avantgarde": "아방가르드",
+    "Advanced": "어드밴스드",
+    "Night Edition": "나이트 에디션",
+    "Ultra Bright": "울트라 브라이트",
+    "Ultra Dark": "울트라 다크",
+    "Black Edition": "블랙 에디션",
+    "Premier": "프리미어",
+    "Redline": "레드라인",
+    "ACTIV": "액티브",
+    "Basic": "베이직",
+    "Black": "블랙",
+    "FLUX": "플럭스",
+    "H-Pick": "에이치 픽",
+    "E-Lite": "이 라이트",
+    "E-Value +": "이 밸류 플러스",
+    "xLine (7인승)": "엑스라인 (7인승)",
+    "X-Line": "엑스 라인"
+  };
+
+  function getTrimTextForMail(trimName) {
+    const koreanName = trimMailNameMap[trimName];
+
+    if (!koreanName || koreanName === trimName) {
+      return trimName;
+    }
+
+    return `${trimName} (${koreanName})`;
+  }
+  const subsidyRegions = [
+    "서울특별시", "부산광역시", "대구광역시", "인천광역시",
+    "광주광역시", "대전광역시", "울산광역시", "세종특별자치시",
+    "경기도", "강원특별자치도", "충청북도", "충청남도",
+    "전북특별자치도", "전라남도", "경상북도", "경상남도", "제주특별자치도"
+  ];
+
+  const state = {
+    step: 1,
+    maxReachedStep: 1,
+    market: "import",
+    brandName: "",
+    carName: "",
+    paintId: "",
+    trim: "",
+    subTrim: "",
+    usage: "",
+    initialCost: "",
+    rate: "",
+    mileage: "",
+    subsidyRegion: "",
+    customerName: "",
+    customerPhone: "",
+    contactMethod: "",
+    submitted: false
+  };
+
+  // 로고를 통한 초기화 시 브라우저 히스토리에 저장할 최초 견적 상태입니다.
+  const initialWizardState = { ...state };
+
+  // Keep wizard transitions in the browser's session history.
+  const wizardHistoryKey = "autogenieImportWizardV1";
+  let wizardHistoryIndex = 0;
+
+  function wizardHistoryEntry(index) {
+    return { [wizardHistoryKey]: true, index, snapshot: { ...state } };
+  }
+
+  function rememberWizardState() {
+    if (window.history.state?.[wizardHistoryKey]) {
+      window.history.replaceState(wizardHistoryEntry(wizardHistoryIndex), "", window.location.href);
+    }
+  }
+
+  function recordWizardNavigation(previousSnapshot) {
+    if (previousSnapshot && window.history.state?.[wizardHistoryKey]) {
+      window.history.replaceState({ [wizardHistoryKey]: true, index: wizardHistoryIndex, snapshot: previousSnapshot }, "", window.location.href);
+    } else {
+      rememberWizardState();
+    }
+    wizardHistoryIndex += 1;
+    window.history.pushState(wizardHistoryEntry(wizardHistoryIndex), "", window.location.href);
+  }
+
+  const restoredWizardEntry = window.history.state;
+  if (restoredWizardEntry?.[wizardHistoryKey] && restoredWizardEntry.snapshot) {
+    Object.assign(state, restoredWizardEntry.snapshot);
+    wizardHistoryIndex = restoredWizardEntry.index || 0;
+  } else {
+    window.history.replaceState(wizardHistoryEntry(0), "", window.location.href);
+  }
+
+  window.addEventListener("popstate", event => {
+    // 모바일 트림 팝업에서 [뒤로]를 누른 경우, 견적 단계 자체는 변경하지 않습니다.
+    if (trimDetailHistoryActive) {
+      trimDetailHistoryActive = false;
+      trimDetailHistoryExitPending = false;
+      if (trimDetailModal?.open) trimDetailModal.close();
+      rememberWizardState();
+      return;
+    }
+    const entry = event.state;
+    if (!entry?.[wizardHistoryKey] || !entry.snapshot) return;
+    Object.assign(state, entry.snapshot);
+    wizardHistoryIndex = entry.index || 0;
+    render();
+    scrollToEstimate();
+  });
+
+  const content = document.getElementById("wizardContent");
+  const indicator = document.getElementById("stepIndicator");
+  const actions = document.getElementById("wizardActions");
+  const spacer = document.querySelector(".wizard-spacer");
+  const backButton = document.getElementById("backButton");
+  const consultButton = document.getElementById("consultButton");
+  const nextButton = document.getElementById("nextButton");
+  const form = document.getElementById("estimateForm");
+  const reviewSection = document.getElementById("reviewSection");
+  const reviewParking = document.getElementById("reviewParking");
+
+  // STEP 02: 트림은 상세 팝업에서 확인한 후에만 선택값에 반영합니다.
+  const trimDetailModal = document.getElementById("trimDetailModal");
+  const confirmTrimSelectionButton = document.getElementById("confirmTrimSelection");
+  let pendingSubTrim = "";
+  // 포르쉐·벤틀리·롤스로이스는 세부 트림 버튼이 없으므로 세부모델 자체를 팝업에서 확인합니다.
+  // 팝업을 취소해도 기존 선택값을 유지하도록 임시 선택값으로 보관합니다.
+  let pendingDirectModel = "";
+  function usesDirectModelTrimDetail() {
+    return ["포르쉐", "벤틀리", "롤스로이스"].includes(normalizeTrimKey(state.brandName));
+  }
+  // 모바일 전체 화면을 닫을 때 임시 히스토리가 이전의 트림 선택값을 덮어쓰지 않도록 관리합니다.
+  const TRIM_DETAIL_HISTORY_KEY = "autogenieTrimDetailScreen";
+  let trimDetailHistoryActive = false;
+  let trimDetailHistoryExitPending = false;
+
+  // 데스크탑 트림 팝업이 열린 동안에는 배경 페이지의 휠 스크롤을 막습니다.
+  // overflow 잠금만 사용하므로 현재 페이지 스크롤 위치가 그대로 유지됩니다.
+  function setTrimBackgroundScrollLock(locked) {
+    document.documentElement.classList.toggle("trim-detail-scroll-locked", locked);
+    document.body.classList.toggle("trim-detail-scroll-locked", locked);
+  }
+
+  // [필수] 포르쉐·벤틀리·롤스로이스 설명 데이터는 script.js에도 포함합니다.
+  // 배포 중 데이터 JS가 누락되거나 이전 캐시가 남아도 팝업 내용을 정상 출력합니다.
+  // 그 외 76개 차종의 참고 기능은 trim-reference-data.js에서 읽습니다.
+  const LUXURY_MODEL_DETAIL_FALLBACK = {
+  "포르쉐|마칸|마칸 GTS 일렉트릭": {
+    "featureTitle": "마칸 GTS 퍼포먼스 콕핏",
+    "featureCaption": "포르쉐 공식 뉴스룸의 마칸 GTS 실내 이미지입니다. 인테리어 패키지 및 디스플레이 구성은 선택 사양에 따라 달라질 수 있습니다.",
+    "summary": "마칸 GTS 일렉트릭은 전용 스포츠 에어 서스펜션과 민첩한 핸들링을 강조한 고성능 순수 전기 SUV입니다. 포르쉐코리아의 국내 안내 수치를 반영했습니다.",
+    "highlights": [
+      "런치 컨트롤 오버부스트 최고 571 PS (포르쉐코리아 표기)",
+      "정지 상태 100km/h 도달 3.8초 (런치 컨트롤)",
+      "스포츠 에어 서스펜션·PASM·10mm 낮아진 차체",
+      "포르쉐 토크 벡터링 플러스(PTV Plus)",
+      "GTS 인테리어 패키지 및 리어 액슬 스티어링은 선택 사양"
+    ],
+    "sourceUrl": "https://www.porsche.com/korea/ko/models/macan/macan-electric-models/macan-gts-electric/",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/마칸/마칸 GTS 퍼포먼스 콕핏.webp"
+  },
+  "포르쉐|카이엔|카이엔": {
+    "featureTitle": "포르쉐 드라이버 익스피리언스",
+    "featureCaption": "포르쉐 공식 뉴스룸의 카이엔 디지털 계기판 및 드라이버 익스피리언스 이미지입니다. 국내 연식별 사양 차이가 있을 수 있습니다.",
+    "summary": "국내 안내 기준 2027 카이엔 가솔린 모델입니다. 디지털 운전자 중심 콕핏과 SUV 공간 활용성을 갖추고 있습니다.",
+    "highlights": [
+      "가솔린 사륜구동(AWD)",
+      "국내 공식 최고출력 360 PS",
+      "정지 상태 100km/h 도달 6.0초",
+      "최고속도 248km/h(공식 표기)",
+      "첨단 디스플레이 및 개별 선택 옵션은 국내 차량 구성별 확인"
+    ],
+    "sourceUrl": "https://www.porsche.com/korea/ko/models/cayenne/cayenne-models/cayenne/",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/카이엔/포르쉐 드라이버 익스피리언스.webp"
+  },
+  "포르쉐|카이엔 EV|카이엔 일렉트릭": {
+    "featureTitle": "카이엔 일렉트릭 플로우 디스플레이",
+    "featureCaption": "포르쉐 공식 카이엔 일렉트릭 플로우 디스플레이의 기능 이미지입니다. 선택 사양과 국내 판매 구성은 별도 확인이 필요합니다.",
+    "summary": "카이엔 일렉트릭은 포르쉐코리아에서 안내하는 순수 전기 사륜구동 SUV로, 퍼포먼스와 일상적 실용성을 결합한 기본 전기 SUV이 특징입니다.",
+    "highlights": [
+      "국내 공식 오버부스트 최고 442 PS (런치 컨트롤)",
+      "정지 상태 100km/h 도달 4.8초 (런치 컨트롤)",
+      "순수 전기 AWD·충전 편의 기능",
+      "포르쉐 플로우 디스플레이 기반 디지털 콕핏",
+      "무선 충전·인터랙티브 무드 조명 등은 선택 사양/출시 시점 별도 확인"
+    ],
+    "sourceUrl": "https://www.porsche.com/korea/ko/models/cayenne/configure/",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/카이엔 EV/플로우 디스플레이.webp"
+  },
+  "포르쉐|카이엔 EV|카이엔 S 일렉트릭": {
+    "featureTitle": "카이엔 일렉트릭 플로우 디스플레이",
+    "featureCaption": "포르쉐 공식 카이엔 일렉트릭 플로우 디스플레이의 기능 이미지입니다. 선택 사양과 국내 판매 구성은 별도 확인이 필요합니다.",
+    "summary": "카이엔 S 일렉트릭은 포르쉐코리아에서 안내하는 순수 전기 사륜구동 SUV로, 기본 모델보다 높은 출력과 민첩한 가속 성능이 특징입니다.",
+    "highlights": [
+      "국내 공식 오버부스트 최고 666 PS (런치 컨트롤)",
+      "정지 상태 100km/h 도달 3.8초 (런치 컨트롤)",
+      "순수 전기 AWD·충전 편의 기능",
+      "포르쉐 플로우 디스플레이 기반 디지털 콕핏",
+      "무선 충전·인터랙티브 무드 조명 등은 선택 사양/출시 시점 별도 확인"
+    ],
+    "sourceUrl": "https://www.porsche.com/korea/ko/models/cayenne/configure/",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/카이엔 EV/플로우 디스플레이.webp"
+  },
+  "포르쉐|카이엔 EV|카이엔 터보 일렉트릭": {
+    "featureTitle": "카이엔 일렉트릭 플로우 디스플레이",
+    "featureCaption": "포르쉐 공식 카이엔 일렉트릭 플로우 디스플레이의 기능 이미지입니다. 선택 사양과 국내 판매 구성은 별도 확인이 필요합니다.",
+    "summary": "카이엔 터보 일렉트릭은 포르쉐코리아에서 안내하는 순수 전기 사륜구동 SUV로, 고성능 전기 SUV 라인업의 터보 모델이 특징입니다.",
+    "highlights": [
+      "국내 공식 오버부스트 최고 1,156 PS (런치 컨트롤)",
+      "정지 상태 100km/h 도달 2.5초 (런치 컨트롤)",
+      "순수 전기 AWD·충전 편의 기능",
+      "포르쉐 플로우 디스플레이 기반 디지털 콕핏",
+      "무선 충전·인터랙티브 무드 조명 등은 선택 사양/출시 시점 별도 확인"
+    ],
+    "sourceUrl": "https://www.porsche.com/korea/ko/models/cayenne/configure/",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/카이엔 EV/플로우 디스플레이.webp"
+  },
+  "포르쉐|타이칸|타이칸": {
+    "featureTitle": "타이칸 디지털 운전자 콕핏",
+    "featureCaption": "포르쉐 공식 이미지입니다. 동일 시리즈의 안내용 이미지이며 연식·선택 사양에 따라 다를 수 있습니다.",
+    "summary": "타이칸은 포르쉐코리아 국내 모델 라인업에 등록된 전기 스포츠 세단입니다. 기본형 Taycan의 전기 주행과 포르쉐 커브드 디스플레이을(를) 중심으로 안내합니다.",
+    "highlights": [
+      "후륜구동 순수 전기 세단",
+      "디지털 커브드 디스플레이 및 포르쉐 PCM",
+      "고성능 800V 전기 시스템·급속 충전",
+      "배터리·휠·시트 및 장비는 실제 선택 모델별 확인"
+    ],
+    "sourceUrl": "https://models.porsche.com/ko-KR/model-start/taycan",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/타이칸/타이칸 디지털 운전자 콕핏.webp"
+  },
+  "포르쉐|타이칸|타이칸 4": {
+    "featureTitle": "타이칸 디지털 운전자 콕핏",
+    "featureCaption": "포르쉐 공식 이미지입니다. 동일 시리즈의 안내용 이미지이며 연식·선택 사양에 따라 다를 수 있습니다.",
+    "summary": "타이칸 4은 포르쉐코리아 국내 모델 라인업에 등록된 전기 스포츠 세단입니다. Taycan 4의 AWD 전기 구동을(를) 중심으로 안내합니다.",
+    "highlights": [
+      "사륜구동 순수 전기 세단",
+      "디지털 커브드 디스플레이 및 포르쉐 PCM",
+      "고성능 800V 전기 시스템·급속 충전",
+      "배터리·휠·시트 및 장비는 실제 선택 모델별 확인"
+    ],
+    "sourceUrl": "https://models.porsche.com/ko-KR/model-start/taycan",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/타이칸/타이칸 디지털 운전자 콕핏.webp"
+  },
+  "포르쉐|타이칸|타이칸 4S": {
+    "featureTitle": "타이칸 디지털 운전자 콕핏",
+    "featureCaption": "포르쉐 공식 이미지입니다. 동일 시리즈의 안내용 이미지이며 연식·선택 사양에 따라 다를 수 있습니다.",
+    "summary": "타이칸 4S은 포르쉐코리아 국내 모델 라인업에 등록된 전기 스포츠 세단입니다. Taycan 4S의 추가 주행 성능을(를) 중심으로 안내합니다.",
+    "highlights": [
+      "사륜구동 고성능 전기 세단",
+      "디지털 커브드 디스플레이 및 포르쉐 PCM",
+      "고성능 800V 전기 시스템·급속 충전",
+      "배터리·휠·시트 및 장비는 실제 선택 모델별 확인"
+    ],
+    "sourceUrl": "https://models.porsche.com/ko-KR/model-start/taycan",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/타이칸/타이칸 디지털 운전자 콕핏.webp"
+  },
+  "포르쉐|타이칸|타이칸 터보": {
+    "featureTitle": "타이칸 디지털 운전자 콕핏",
+    "featureCaption": "포르쉐 공식 이미지입니다. 동일 시리즈의 안내용 이미지이며 연식·선택 사양에 따라 다를 수 있습니다.",
+    "summary": "타이칸 터보은 포르쉐코리아 국내 모델 라인업에 등록된 전기 스포츠 세단입니다. 오버부스트 최고 884 PS · 0–100km/h 2.7초을(를) 중심으로 안내합니다.",
+    "highlights": [
+      "포르쉐코리아 공식 표기: 오버부스트 최고 884 PS · 0–100km/h 2.7초",
+      "디지털 커브드 디스플레이 및 포르쉐 PCM",
+      "고성능 800V 전기 시스템·급속 충전",
+      "배터리·휠·시트 및 장비는 실제 선택 모델별 확인"
+    ],
+    "sourceUrl": "https://models.porsche.com/ko-KR/model-start/taycan",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/타이칸/타이칸 디지털 운전자 콕핏.webp"
+  },
+  "포르쉐|타이칸|타이칸 터보 S": {
+    "featureTitle": "타이칸 디지털 운전자 콕핏",
+    "featureCaption": "포르쉐 공식 이미지입니다. 동일 시리즈의 안내용 이미지이며 연식·선택 사양에 따라 다를 수 있습니다.",
+    "summary": "타이칸 터보 S은 포르쉐코리아 국내 모델 라인업에 등록된 전기 스포츠 세단입니다. 오버부스트 최고 952 PS · 0–100km/h 2.4초을(를) 중심으로 안내합니다.",
+    "highlights": [
+      "포르쉐코리아 공식 표기: 오버부스트 최고 952 PS · 0–100km/h 2.4초",
+      "디지털 커브드 디스플레이 및 포르쉐 PCM",
+      "고성능 800V 전기 시스템·급속 충전",
+      "배터리·휠·시트 및 장비는 실제 선택 모델별 확인"
+    ],
+    "sourceUrl": "https://models.porsche.com/ko-KR/model-start/taycan",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/타이칸/타이칸 디지털 운전자 콕핏.webp"
+  },
+  "포르쉐|타이칸|타이칸 터보 GT": {
+    "featureTitle": "타이칸 디지털 운전자 콕핏",
+    "featureCaption": "포르쉐 공식 이미지입니다. 동일 시리즈의 안내용 이미지이며 연식·선택 사양에 따라 다를 수 있습니다.",
+    "summary": "타이칸 터보 GT은 포르쉐코리아 국내 모델 라인업에 등록된 전기 스포츠 세단입니다. 오버부스트 최고 1,034 PS · 0–100km/h 2.3초을(를) 중심으로 안내합니다.",
+    "highlights": [
+      "포르쉐코리아 공식 표기: 오버부스트 최고 1,034 PS · 0–100km/h 2.3초",
+      "디지털 커브드 디스플레이 및 포르쉐 PCM",
+      "고성능 800V 전기 시스템·급속 충전",
+      "배터리·휠·시트 및 장비는 실제 선택 모델별 확인"
+    ],
+    "sourceUrl": "https://models.porsche.com/ko-KR/model-start/taycan",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/타이칸/타이칸 디지털 운전자 콕핏.webp"
+  },
+  "포르쉐|파나메라|파나메라 4": {
+    "featureTitle": "파나메라 4 디지털 콕핏",
+    "featureCaption": "포르쉐 공식 파나메라 4 실내 대표 사진입니다.",
+    "summary": "파나메라 4는 럭셔리 스포츠 세단의 정숙성과 주행 성능을 결합한 국내 판매 모델입니다.",
+    "highlights": [
+      "2027 포르쉐코리아 기준 가솔린 사륜구동",
+      "국내 공식 최고출력 360 PS",
+      "정지 상태 100km/h 도달 5.0초",
+      "최고속도 270km/h",
+      "액티브 라이드 등 고급 주행 옵션은 사양별 별도 확인"
+    ],
+    "sourceUrl": "https://www.porsche.com/korea/ko/models/panamera/panamera-models/panamera-4/",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": false,
+    "featureImage": "images/trim-features/포르쉐/파나메라/파나메라 4 디지털 콕핏.webp"
+  },
+  "벤틀리|벤테이가|4.0 V8": {
+    "featureTitle": "벤테이가 스피드 드라이버 콕핏",
+    "featureCaption": "벤틀리 공식 벤테이가 스피드 실내 이미지입니다. 선택 사양은 계약 시 확인해야 합니다.",
+    "summary": "현재 사이트의 4.0 V8 / SPEED 표기를 유지하면서 벤틀리 한국 공식 모델 안내의 벤테이가 스피드 특징을 정리했습니다. 일반 V8(550 PS)과 스피드(650 PS)의 수치는 구분됩니다.",
+    "highlights": [
+      "벤테이가 스피드: 4.0L V8 트윈터보 · 650 PS · 850 Nm",
+      "벤테이가 일반 V8: 550 PS · 770 Nm (스피드와 구분)",
+      "V8의 벤틀리 다이내믹 라이드와 4륜 스티어링",
+      "3D 서라운드 뷰·주차 보조 및 투어링 스펙은 국내 적용 확인",
+      "스피드 전용 인테리어 마감·휠은 실제 차량 구성별 확인"
+    ],
+    "sourceUrl": "https://www.bentleymotors.com/kr/ko/models/bentayga.html",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": true,
+    "featureImage": "images/trim-features/벤틀리/벤테이가/벤테이가 스피드 드라이버 콕핏.webp"
+  },
+  "벤틀리|컨티넨탈 GT|4.0 PHEV": {
+    "featureTitle": "컨티넨탈 GT 실내 마감과 디스플레이",
+    "featureCaption": "벤틀리 공식 컨티넨탈 GT 아주르 실내 이미지입니다. 실제 선택 등급과 다를 수 있습니다.",
+    "summary": "4세대 컨티넨탈 GT는 V8 플러그인 하이브리드 기반의 럭셔리 그랜드 투어러입니다. 홈페이지의 Core/Speed/Mulliner/Azure 등급은 국내 딜러의 실제 판매 구성을 확인해야 합니다.",
+    "highlights": [
+      "4.0L V8 플러그인 하이브리드(PHEV) 계열",
+      "스피드: 울트라 퍼포먼스 하이브리드 최고 782 PS / 1,000 Nm (스피드 기준)",
+      "애플 카플레이·안드로이드 오토·커넥티드 인포테인먼트",
+      "도심 주행 보조용 시티 스펙(시장별 기능 상이)",
+      "벤틀리 로테이팅 디스플레이·투어링 스펙은 등급/옵션별 확인"
+    ],
+    "sourceUrl": "https://www.bentleymotors.com/kr/ko/models/continental-gt.html",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": true,
+    "featureImage": "images/trim-features/벤틀리/컨티넨탈 GT/컨티넨탈 GT 실내 마감과 디스플레이.webp"
+  },
+  "벤틀리|플라잉스퍼|4.0 V8": {
+    "featureTitle": "플라잉스퍼 뒷좌석 터치스크린 리모트",
+    "featureCaption": "벤틀리 공식 플라잉스퍼 아주르의 뒷좌석 터치스크린 리모트 이미지입니다. 4.0 V8 국내 주문 차량의 세부 적용 사양은 별도 확인이 필요합니다.",
+    "summary": "현행 플라잉스퍼는 V8 하이브리드 파워트레인을 사용하는 4도어 럭셔리 세단입니다. 웹사이트에 남아 있는 4.0 V8 표기는 현행 국내 구동 방식과 정확히 대조해야 합니다.",
+    "highlights": [
+      "4.0L V8 기반 하이브리드 파워트레인",
+      "리어 터치스크린 리모트(TSR): 공조·오디오·좌석 기능 제어",
+      "PM2.5 필터 기반 업그레이드 공조 시스템",
+      "무선 Apple CarPlay 및 Android Auto 지원(서비스·시장별 확인)",
+      "웰니스 시트·로테이팅 디스플레이 등은 옵션/등급별 확인"
+    ],
+    "sourceUrl": "https://www.bentleymotors.com/kr/ko/models/flying-spur.html",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": true,
+    "featureImage": "images/trim-features/벤틀리/플라잉스퍼/뒷좌석 터치스크린 리모트.webp"
+  },
+  "롤스로이스|스펙터|스펙터": {
+    "featureTitle": "스펙터 일루미네이티드 페시아",
+    "featureCaption": "롤스로이스 공식 이미지로 확인되는 스펙터 일루미네이티드 페시아(비스포크 구성 예시)입니다.",
+    "summary": "스펙터는 롤스로이스 최초의 순수 전기 슈퍼 쿠페로, 정숙한 주행과 맞춤 제작 실내를 제공하는 모델입니다. 현재 한국에서 블랙 배지 스펙터도 공식 출시된 상태입니다.",
+    "highlights": [
+      "순수 전기 럭셔리 쿠페",
+      "스타라이트 도어·일루미네이티드 페시아 등 비스포크 선택 가능",
+      "롤스로이스 플래너(실내 조명·콕핏 통합 시스템) 및 고급 마감",
+      "블랙 배지 스펙터(국내 출시): 659 PS · 0–100km/h 4.3초 (일반형과 구분)",
+      "2026 신형 스펙터 시리즈 II 사양은 국내 실제 판매 시점·트림별 확인"
+    ],
+    "sourceUrl": "https://www.rolls-roycemotorcars.com/ko_KR/showroom/spectre-in-detail.html",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": true,
+    "featureImage": "images/trim-features/롤스로이스/스펙터/스펙터 일루미네이티드 페시아.webp"
+  },
+  "롤스로이스|팬텀|6.75 V12": {
+    "featureTitle": "팬텀 비스포크 대시보드와 더 갤러리",
+    "featureCaption": "롤스로이스 공식 프레스 이미지(비스포크 차량 예시)입니다. 세부 마감은 계약별로 다릅니다.",
+    "summary": "팬텀 시리즈 II는 장인정신과 뒷좌석 승차감, 완성도 높은 비스포크 실내가 특징인 플래그십 세단입니다. 국내 판매 구성에 따라 부품과 옵션은 다르게 적용됩니다.",
+    "highlights": [
+      "6.75L V12 기반 팬텀 시리즈 II (연식별 세부 제원 확인)",
+      "대시보드 전체를 가로지르는 비스포크 더 갤러리(The Gallery)",
+      "고요한 실내 공간과 롤스로이스 매직 카펫 라이드",
+      "스타라이트 헤드라이너·비스포크 가죽·목재 마감 선택 가능",
+      "22인치 폴리시드 디스크 휠 등 외장 사양은 구성별 확인"
+    ],
+    "sourceUrl": "https://www.rolls-roycemotorcars.com/ko_KR/showroom/phantom-in-detail.html",
+    "sourceVerified": "한국 공식 모델 안내 페이지와 국내 판매 자료 대조",
+    "featureStatus": "reference",
+    "referenceOnly": true,
+    "featureImage": "images/trim-features/롤스로이스/팬텀/팬텀 비스포크 대시보드와 더 갤러리.webp"
+  }
+};
+  const normalizeTrimKey = value => String(value || "").normalize("NFC").trim().replace(/\s+/g, " ");
+  function resolveLuxuryModelDetail(brand, car, model) {
+    const key = [brand, car, model].map(normalizeTrimKey).join("|");
+    return LUXURY_MODEL_DETAIL_FALLBACK[key] || null;
+  }
+
+  // 수입차 트림별 설명은 js/trim-reference-data.js에서 일괄 관리합니다.
+  // 팝업 공통 로직은 이 파일에서 처리합니다.
+  // 조건이 명백하게 '다른 트림 전용'인 경우만 화면에서 제외합니다.
+  // 나머지 항목은 모두 참고 자료로 노출하며 실제 적용 조건을 함께 표시합니다.
+  function isTrimReferenceFeatureRelevant(feature, brand, car, model, trim) {
+    const cond = String(feature?.condition || "");
+    const name = String(trim || "");
+    if (!cond || !name) return true;
+    if (name === "Pro Lite" && /Pro 전용|Pro만|Pro 추가 사양|Pro에서만/.test(cond)) return false;
+    if (name === "Pro Lite" && /Pro Lite 제외/.test(cond)) return false;
+    if (name === "Pro" && /Pro Lite 전용|Pro 제외/.test(cond)) return false;
+    if (name === "Core" && /Core 제외|Ultra 적용|Ultra 전용|Ultra만/.test(cond)) return false;
+    if (name.includes("Plus") && /Ultra 적용|Ultra 전용|Ultra만/.test(cond)) return false;
+    if (/Advanced/i.test(name) && /Advanced 제외|S.line 적용|S.line 전용/.test(cond)) return false;
+    if (/A\/T/.test(name) && /M Sport 전용/.test(cond)) return false;
+    if (brand === "벤츠" && car === "AMG SL 로드스터" && model.includes("SL 43") &&
+        /SL 63 적용|SL 63 전용/.test(cond) && !/SL 43/.test(cond)) return false;
+    if (brand === "테슬라" && car === "모델3" && model.includes("standard") &&
+        /Premium|Performance/.test(cond) && !/공통|전체/.test(cond)) return false;
+    if (brand === "BMW" && car === "IX" && model.includes("xDrive45") &&
+        /xDrive60·M70|xDrive60 및 M70/.test(cond) && !/xDrive45·xDrive60/.test(cond)) return false;
+    return true;
+  }
+
+  function openTrimDetailModal(trimName, { directModel = false } = {}) {
+    if (!ENABLE_TRIM_DETAIL_POPUP || !trimName || state.step !== 2) return;
+    // 일반 차량은 하위 트림, 포르쉐·벤틀리·롤스로이스는 세부모델을 팝업 대상으로 사용합니다.
+    const selectedModelName = directModel ? trimName : state.trim;
+    if (!selectedModelName || (directModel && !usesDirectModelTrimDetail())) return;
+    const modelGroup = currentVehicle()?.detailModels?.find(group => group.name === selectedModelName);
+    if (!modelGroup || (!directModel && !modelGroup.trims.includes(trimName))) {
+      console.warn("[오토지니] 차량 모델이 등록되지 않아 트림 팝업을 열지 못했습니다.", state.brandName, state.carName, selectedModelName, trimName);
+      return;
+    }
+
+    const descriptionKey = directModel
+      ? [state.brandName, state.carName, selectedModelName].join("|")
+      : [state.brandName, state.carName, selectedModelName, trimName].join("|");
+    // 차종 단위 공통 이미지 대신 반드시 차종 + 실제 선택한 트림을 기준으로 매핑합니다.
+    // 확인된 기본 사양이 아닐 때는 자료에 없는 업그레이드를 사실로 안내하지 않습니다.
+    const referenceKey = [state.brandName, state.carName, trimName].join("|");
+    const referenceGroupKey = [state.brandName, state.carName, selectedModelName, trimName].join("|");
+    // 업로드한 차종별 참고 자료를 선택한 트림에 맞춰 표시합니다.
+    // 기능별 원본의 적용 조건을 확인할 수 있을 때만 제외/표시를 판단합니다.
+    // 제조사 자료만으로 확정할 수 없는 기본사양/상위 업그레이드는 단정하지 않습니다.
+    const carFeatureGroup = window.AutoGenieTrimFeaturesByModel?.[[state.brandName, state.carName].join("|")];
+    const visibleCarFeatures = Array.isArray(carFeatureGroup?.features)
+      ? carFeatureGroup.features.filter(feature => isTrimReferenceFeatureRelevant(feature, state.brandName, state.carName, selectedModelName, trimName))
+      : [];
+    // 트림마다 대표 참고 이미지를 가능한 한 다르게 사용합니다.
+    // 아래 이미지는 해당 트림의 기본 적용 사양을 확정하는 근거가 아닙니다.
+    const selectedTrimIndex = directModel ? 0 : modelGroup.trims.indexOf(trimName);
+    const referenceHero = visibleCarFeatures.length
+      ? visibleCarFeatures[(selectedTrimIndex < 0 ? 0 : selectedTrimIndex) % visibleCarFeatures.length]
+      : null;
+    const carReferenceDetail = referenceHero ? {
+      referenceOnly: true,
+      summary: `${state.carName}의 기능을 살펴볼 수 있습니다. 제공된 자료는 차종 기준이며, ${directModel ? selectedModelName : `${selectedModelName} · ${trimName}`}의 실제 기본 사양 및 옵션 적용은 별도로 확인해야 합니다.`,
+      featureTitle: referenceHero.title,
+      featureImage: referenceHero.image,
+      featureCaption: referenceHero.description,
+      features: visibleCarFeatures,
+      highlights: [],
+    } : null;
+    const luxuryModelDetail = directModel
+      ? resolveLuxuryModelDetail(state.brandName, state.carName, selectedModelName)
+      : null;
+    // 최종 세부모델이 곧 트림인 세 브랜드는 script.js 내장 정보를 최우선 사용합니다.
+    // 타 브랜드는 별도 데이터 파일의 트림별 등록 정보를 종전대로 우선합니다.
+    const registeredDetail = luxuryModelDetail
+      || window.AutoGenieTrimReference?.[descriptionKey]
+      || window.AutoGenieTrimReference?.[referenceGroupKey]
+      || window.AutoGenieTrimReference?.[referenceKey]
+      || carReferenceDetail
+      || null;
+    const compareTitle = document.getElementById("trimDetailCompareTitle");
+    const comparisonSection = document.getElementById("trimDetailComparison");
+    const inheritedList = document.getElementById("trimDetailInheritedList");
+    const addedList = document.getElementById("trimDetailAddedList");
+    const comparisonFoot = document.getElementById("trimDetailComparisonFoot");
+    const inheritedTitle = document.getElementById("trimDetailInheritedTitle");
+    const addedTitle = document.getElementById("trimDetailAddedTitle");
+    const upgrade = registeredDetail?.upgrade;
+    const hasComparison = Boolean(upgrade && Array.isArray(registeredDetail?.inheritedHighlights));
+    if (comparisonSection && inheritedList && addedList && comparisonFoot && inheritedTitle && addedTitle) {
+      comparisonSection.hidden = !hasComparison;
+      comparisonSection.classList.toggle("trim-detail-modal__comparison--pending", Boolean(hasComparison && upgrade?.verified === false));
+      inheritedList.replaceChildren();
+      addedList.replaceChildren();
+
+      if (hasComparison) {
+        const isUnverified = upgrade.verified === false;
+        const inheritedGroup = inheritedList.closest(".trim-detail-modal__comparison-group");
+        const addedBadge = comparisonSection.querySelector(".trim-detail-modal__upgrade-badge");
+        if (inheritedGroup) inheritedGroup.hidden = !registeredDetail.inheritedHighlights.length;
+        if (addedBadge) addedBadge.hidden = isUnverified;
+        inheritedTitle.textContent = `${upgrade.previous}에서 이어지는 주요 사양`;
+        addedTitle.textContent = isUnverified
+          ? (upgrade.label || "사양 비교 확인 필요")
+          : trimName.includes("블랙 잉크")
+            ? "달라지는 디자인 포인트"
+            : "새로 추가된 기능";
+
+        registeredDetail.inheritedHighlights.forEach(label => {
+          const li = document.createElement("li");
+          const marker = document.createElement("span");
+          marker.className = "trim-detail-modal__check";
+          marker.setAttribute("aria-hidden", "true");
+          marker.textContent = "✓";
+          const txt = document.createElement("span");
+          txt.textContent = label;
+          li.append(marker, txt);
+          inheritedList.append(li);
+        });
+
+        upgrade.items.forEach(label => {
+          const li = document.createElement("li");
+          const marker = document.createElement("span");
+          marker.className = isUnverified
+            ? "trim-detail-modal__check"
+            : "trim-detail-modal__check trim-detail-modal__check--plus";
+          marker.setAttribute("aria-hidden", "true");
+          marker.textContent = isUnverified ? "✓" : "+";
+          const txt = document.createElement("span");
+          txt.textContent = label;
+          li.append(marker, txt);
+          addedList.append(li);
+        });
+        if (isUnverified && !upgrade.items.length) {
+          const li = document.createElement("li");
+          li.className = "trim-detail-modal__comparison-pending";
+          li.textContent = "제공된 자료에서 이 트림의 추가 기본 사양을 확인할 수 없습니다.";
+          addedList.append(li);
+        }
+        comparisonSection.classList.toggle("trim-detail-modal__comparison--pending", isUnverified);
+        comparisonFoot.textContent = upgrade.note || "기본 사양은 연식과 선택 옵션에 따라 달라질 수 있습니다.";
+      }
+    }
+
+    if (compareTitle) compareTitle.textContent = hasComparison
+      ? "주요 사양"
+      : registeredDetail?.featureStatus === "optional" ? "선택 가능한 기능"
+      : registeredDetail?.referenceOnly ? "트림 적용 확인이 필요한 참고 기능"
+      : registeredDetail ? "주요 기본 사양" : "트림별로 달라질 수 있는 부분";
+    const defaultHighlights = []; // 미등록 상태: 임의의 사양을 표시하지 않습니다.
+
+    // 텍스트 노드로 넣어 트림명에 특수문자가 있어도 HTML로 해석되지 않게 합니다.
+    document.getElementById("trimDetailVehicle").textContent =
+      directModel ? `${state.brandName} ${state.carName}` : `${state.brandName} ${state.carName} · ${selectedModelName}`;
+    document.getElementById("trimDetailModalTitle").textContent = trimName;
+    // 별도의 하위 트림이 없는 차량은 확인 버튼 문구도 세부모델에 맞춰 표시합니다.
+    const footerQuestion = trimDetailModal?.querySelector(".trim-detail-modal__question");
+    if (footerQuestion) footerQuestion.textContent = directModel
+      ? "이 세부모델을 선택하시겠습니까?" : "이 트림을 선택하시겠습니까?";
+    if (confirmTrimSelectionButton) confirmTrimSelectionButton.textContent = directModel
+      ? "이 모델 선택하기" : "이 트림 선택하기";
+    trimDetailModal?.querySelectorAll(".trim-detail-modal__cancel span").forEach(label => {
+      label.textContent = directModel ? "다른 모델 보기" : "다른 트림 살펴보기";
+    });
+
+    // 차량 외관 대표 이미지는 사용하지 않고, 검증된 트림별 '핵심 기능' 이미지만 표시합니다.
+    // 미등록 트림은 이미지 블록 자체를 숨겨 잘못된 옵션을 안내하지 않도록 합니다.
+    // 등록 예시: window.AutoGenieTrimReference["브랜드|차량|세부모델|트림"].featureImage
+    const trimVisual = document.getElementById("trimDetailVisual");
+    const trimImage = document.getElementById("trimDetailImage");
+    const trimFeatureName = document.getElementById("trimDetailFeatureName");
+    const trimImageCaption = document.getElementById("trimDetailImageCaption");
+    const featureLabel = document.getElementById("trimDetailFeatureLabel");
+    if (featureLabel) featureLabel.textContent =
+      registeredDetail?.featureStatus === "added" ? "이번 트림부터 기본 적용되는 기능"
+      : registeredDetail?.featureStatus === "standard" ? "트림 기본 적용 기능"
+      : registeredDetail?.featureStatus === "optional" ? "이 트림에서 선택 가능한 기능"
+      : registeredDetail?.referenceOnly ? "차종 참고 기능" : "대표 핵심 기능";
+    if (trimVisual && trimImage && trimFeatureName && trimImageCaption) {
+      trimVisual.hidden = true;
+      trimImage.onerror = null;
+      trimImage.removeAttribute("src");
+      trimImage.alt = "";
+      // 기능 이미지가 없다면 차량 대표 사진으로 대신 채우지 않습니다.
+      // 설명/사양 영역은 이미지가 없어도 정상 표시합니다.
+      const featureImage = registeredDetail?.featureImage || "";
+      if (featureImage && registeredDetail?.featureTitle) {
+        trimFeatureName.textContent = registeredDetail.featureTitle;
+        trimImage.alt = registeredDetail.featureAlt || `${state.carName}의 ${registeredDetail.featureTitle} 기능 참고 이미지`;
+        trimImageCaption.textContent = registeredDetail.featureCaption || "기능 설명을 위한 이미지입니다. 실제 적용 사양은 연식과 옵션에 따라 달라질 수 있습니다.";
+        trimImage.classList.toggle("trim-detail-modal__image--contain", registeredDetail.featureImageDisplay === "contain");
+        // 공식 기능 이미지가 차단되거나 삭제되어도 차량 외관 사진으로 대체하지 않습니다.
+        // 잘못된 사진으로 기능을 안내하는 것보다 이미지 영역을 숨기고 정확한 텍스트만 표시합니다.
+        // 로컬 기능 이미지를 우선 사용합니다. 파일이 아직 업로드되지 않은 경우에만
+        // 동일한 기능을 촬영한 제조사 공식 이미지를 시도합니다(차량 외관 사진 사용 금지).
+        const remoteFeatureImage = ""; // 로컬 기능 이미지가 없는 경우 잘못된 차량 사진으로 대체하지 않음
+        let attemptedOfficialImage = false;
+        trimImage.onerror = () => {
+          if (!attemptedOfficialImage && remoteFeatureImage && trimImage.src !== remoteFeatureImage) {
+            attemptedOfficialImage = true;
+            trimImage.src = remoteFeatureImage;
+            return;
+          }
+          trimImage.onerror = null;
+          trimImage.removeAttribute("src");
+          trimVisual.hidden = true;
+        };
+        // 공식 기능 이미지가 표시되지 않아도 기능명·요약·국내 사양 텍스트는 유지됩니다.
+        trimImage.src = assetUrl(featureImage);
+        trimVisual.hidden = false;
+      } else {
+        trimFeatureName.textContent = "";
+        trimImageCaption.textContent = "";
+      }
+    }
+
+    document.getElementById("trimDetailModalSummary").textContent = registeredDetail?.summary ||
+      (directModel
+        ? "해당 세부모델의 상세 기능 설명은 아직 등록되지 않았습니다. 실제 사양은 상담 시 확인해 주세요."
+        : "해당 트림의 상세 설명은 아직 등록되지 않았습니다. 실제 사양은 상담 시 확인해 주세요.");
+
+    const noticeText = document.querySelector(".trim-detail-modal__notice p");
+    if (noticeText) noticeText.textContent = registeredDetail?.featureStatus === "optional"
+      ? "이 기능은 제공된 대표 차량 구성에서 선택 가능한 옵션으로 확인됐습니다. 실제 주문 가능 여부와 가격은 연식·엔진·패키지에 따라 달라질 수 있습니다."
+      : registeredDetail?.referenceOnly
+        ? "이 이미지는 해당 차종의 참고 기능이며, 현재 선택한 트림에서 새로 추가되거나 기본 제공된다는 뜻은 아닙니다. 정확한 적용 여부는 연식·세부모델별 사양표를 확인해 주세요."
+        : "기본 사양과 선택 옵션은 차량, 연식, 세부모델에 따라 달라질 수 있습니다. 정확한 구성은 상담 시 확인해 주세요.";
+    // 국산차와 동일한 "주요 사양" 체크 목록입니다.
+    // 차종별 참고 기능은 기본 사양으로 오해되지 않도록 섹션명을 별도로 표시합니다.
+    // 여러 기능 이미지는 카드형 그리드 없이, 리스트를 클릭하면 상단 한 장만 교체됩니다.
+    const infoSection = document.querySelector(".trim-detail-modal__info");
+    const referenceFeatures = registeredDetail?.referenceOnly && Array.isArray(registeredDetail?.features)
+      ? registeredDetail.features : [];
+    const hasHighlights = Array.isArray(registeredDetail?.highlights) && registeredDetail.highlights.length > 0;
+    const showReferenceList = !hasComparison && !hasHighlights && referenceFeatures.length > 0;
+    if (infoSection) infoSection.hidden = !hasComparison && !hasHighlights && !showReferenceList;
+    if (compareTitle && showReferenceList) compareTitle.textContent = "차종 참고 기능 (트림 적용 여부 확인 필요)";
+    const highlightList = document.getElementById("trimDetailHighlights");
+    highlightList.replaceChildren();
+    highlightList.hidden = hasComparison || (!hasHighlights && !showReferenceList);
+    const highlights = hasHighlights ? registeredDetail.highlights : defaultHighlights;
+    if (!hasComparison) {
+      if (showReferenceList) {
+        referenceFeatures.forEach(feature => {
+          const li = document.createElement("li");
+          li.className = "trim-detail-modal__reference-feature";
+          li.tabIndex = 0;
+          li.setAttribute("role", "button");
+          li.setAttribute("aria-label", `${feature.title} 이미지와 설명 보기`);
+          const marker = document.createElement("span");
+          marker.className = "trim-detail-modal__check";
+          marker.setAttribute("aria-hidden", "true");
+          marker.textContent = "✓";
+          const label = document.createElement("span");
+          // 적용 조건은 원본 기준으로 그대로 안내합니다.
+          label.textContent = feature.title + (feature.description ? ` — ${feature.description}` : "")
+            + (feature.condition ? ` (국내 적용 조건: ${feature.condition})` : "");
+          li.append(marker, label);
+          const swapReferenceImage = () => {
+            if (!trimVisual || !trimImage || !trimFeatureName || !trimImageCaption) return;
+            trimImage.onerror = null;
+            trimImage.removeAttribute("src");
+            if (!feature.image) { trimVisual.hidden = true; return; }
+            trimFeatureName.textContent = feature.title || "";
+            trimImage.alt = `${state.carName} - ${feature.title} 기능 참고 이미지`;
+            trimImageCaption.textContent = feature.description || "기능 설명 참고 이미지입니다.";
+            trimImage.classList.remove("trim-detail-modal__image--contain");
+            trimImage.onerror = () => { trimVisual.hidden = true; };
+            trimImage.src = assetUrl(feature.image);
+            trimVisual.hidden = false;
+            // 모바일 전체화면 / PC 팝업 내부에서만 스크롤합니다.
+            trimDetailModal.querySelector(".trim-detail-modal__body")?.scrollTo({top: 0, behavior: "smooth"});
+          };
+          li.addEventListener("click", swapReferenceImage);
+          li.addEventListener("keydown", event => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              swapReferenceImage();
+            }
+          });
+          highlightList.append(li);
+        });
+      } else {
+        highlights.forEach(item => {
+          const li = document.createElement("li");
+          const marker = document.createElement("span");
+          marker.className = "trim-detail-modal__check";
+          marker.setAttribute("aria-hidden", "true");
+          marker.textContent = "✓";
+          const label = document.createElement("span");
+          label.textContent = item;
+          li.append(marker, label);
+          highlightList.append(li);
+        });
+      }
+    }
+
+    pendingDirectModel = directModel ? selectedModelName : "";
+    pendingSubTrim = directModel ? "" : trimName;
+    if (trimDetailModal?.showModal) {
+      trimDetailModal.showModal();
+      setTrimBackgroundScrollLock(true);
+      // 히스토리와 선택값이 뒤섞이지 않도록 모바일에서만 별도 화면 이력을 생성합니다.
+      // 일부 모바일 WebView에서 이력 변경이 제한되어도 팝업 표시는 유지합니다.
+      if (window.matchMedia("(max-width: 768px)").matches) {
+        try {
+          rememberWizardState();
+          window.history.pushState(
+            { ...(window.history.state || {}), [TRIM_DETAIL_HISTORY_KEY]: true }, "", window.location.href
+          );
+          trimDetailHistoryActive = true;
+        } catch (error) {
+          console.warn("[오토지니] 모바일 트림 팝업의 뒤로가기 이력을 추가하지 못했습니다.", error);
+        }
+      }
+      // 최초 진입 시 닫기 버튼에 포커스 테두리가 생기지 않도록 제목으로 포커스를 이동합니다.
+      document.getElementById("trimDetailModalTitle")?.focus({ preventScroll: true });
+      // 이전 트림의 스크롤 위치가 남지 않도록 상세 내용을 처음부터 보여줍니다.
+      trimDetailModal.querySelector(".trim-detail-modal__body")?.scrollTo(0, 0);
+    } else {
+      // dialog 미지원 브라우저에서도 확인 전 자동 선택은 하지 않습니다.
+      if (window.confirm(`${state.brandName} ${state.carName} - ${selectedModelName}${directModel ? "" : ` / ${trimName}`}\n${directModel ? "이 세부모델" : "이 트림"}을 선택하시겠습니까?`)) {
+        commitTrimSelection();
+      } else {
+        pendingDirectModel = "";
+        pendingSubTrim = "";
+      }
+    }
+  }
+
+  function commitTrimSelection() {
+    if (state.step !== 2) return;
+    const directModel = Boolean(pendingDirectModel);
+    if (directModel) {
+      if (!usesDirectModelTrimDetail()) return;
+      const modelGroup = currentVehicle()?.detailModels?.find(item => item.name === pendingDirectModel);
+      if (!modelGroup) return;
+      // 하위 트림이 없는 차량은 세부모델만 확정합니다. 데이터 구조/견적 제출값은 그대로 둡니다.
+      state.trim = pendingDirectModel;
+      state.subTrim = "";
+    } else {
+      const selected = pendingSubTrim;
+      if (!selected || !state.trim) return;
+      const group = currentVehicle()?.detailModels?.find(item => item.name === state.trim);
+      if (!group?.trims.includes(selected)) return;
+      state.subTrim = selected;
+    }
+
+    // 실제 선택값을 확정한 후에만 렌더하여 닫기/뒤로가기로 미확정값이 선택되지 않게 합니다.
+    pendingDirectModel = "";
+    pendingSubTrim = "";
+    render();
+    showValidation("");
+    rememberWizardState();
+    if (trimDetailModal?.open) trimDetailModal.close();
+    setTrimBackgroundScrollLock(false);
+    scrollToNextSelection(directModel
+      ? '[data-option-section="engine-model"]'
+      : '[data-option-section="sub-trim"]', "start");
+  }
+
+  confirmTrimSelectionButton?.addEventListener("click", commitTrimSelection);
+  trimDetailModal?.querySelectorAll("[data-trim-close]").forEach(button => {
+    button.addEventListener("click", () => trimDetailModal.close());
+  });
+  trimDetailModal?.addEventListener("click", event => {
+    // 팝업 바깥의 어두운 배경을 클릭하면 취소합니다.
+    if (event.target === trimDetailModal) trimDetailModal.close();
+  });
+  trimDetailModal?.addEventListener("close", () => {
+    setTrimBackgroundScrollLock(false);
+    // 취소는 기존 선택 유지, 확정은 이미 commitTrimSelection에서 선택 반영.
+    pendingDirectModel = "";
+    pendingSubTrim = "";
+    if (trimDetailHistoryActive && !trimDetailHistoryExitPending) {
+      trimDetailHistoryExitPending = true;
+      window.history.back();
+    }
+  });
+
+
+  function updateReviewPlacement() {
+    if (!reviewSection || !reviewParking) return;
+
+    const shouldShowReview = state.step === 1 && !state.brandName;
+    const slot = content.querySelector("[data-review-slot]");
+    reviewSection.hidden = !shouldShowReview;
+
+    if (shouldShowReview && slot) {
+      slot.appendChild(reviewSection);
+      window.requestAnimationFrame(() => window.dispatchEvent(new Event("resize")));
+      return;
+    }
+
+    reviewParking.appendChild(reviewSection);
+  }
+
+
+
+  function resetSelectionsAfterVehicleChange() {
+    // 차량이 달라지면 이전 차량에 종속된 이후 단계의 선택값을 모두 비웁니다.
+    state.trim = "";
+    state.subTrim = "";
+    state.usage = "";
+    state.initialCost = "";
+    state.rate = "";
+    state.mileage = "";
+    state.subsidyRegion = "";
+    state.customerName = "";
+    state.customerPhone = "";
+    state.contactMethod = "";
+    state.submitted = false;
+    state.blockedSubmission = false;
+
+    // 다시 1단계부터 완료해야 다음 단계 탭을 열 수 있도록 합니다.
+    state.maxReachedStep = 1;
+  }
+
+  function currentBrands() {
+    return brands.filter(brand => brand.market === "import");
+  }
+
+  function getBrandLogoPath(brandName) {
+    const logoMap = {
+      "현대": "./images/logo/bk_uniform/hyundai.svg",
+      "제네시스": "./images/logo/bk_uniform/genesis.svg",
+      "기아": "./images/logo/bk_uniform/kia.svg",
+      "KGM": "./images/logo/bk_uniform/kgm.svg",
+      "르노": "./images/logo/bk_uniform/renault.svg",
+      "쉐보레": "./images/logo/bk_uniform/chevrolet.svg",
+      "BMW": "./images/logo/bk_uniform/bmw.svg",
+      "벤츠": "./images/logo/bk_uniform/benz.svg",
+      "아우디": "./images/logo/bk_uniform/audi.svg",
+      "볼보": "./images/logo/bk_uniform/volvo.svg",
+      "테슬라": "./images/logo/bk_uniform/tesla.svg",
+      "랜드로버": "./images/logo/bk_uniform/landrover.svg",
+      "폭스바겐": "./images/logo/bk_uniform/volkswagen.svg",
+      "포르쉐": "./images/logo/porsche.svg",
+      "벤틀리": "./images/logo/bentley.png",
+      "롤스로이스": "./images/logo/rolls-royce.svg"
+    
+    };
+
+    return logoMap[brandName] || "";
+  }
+
+  function isLightBrandLogo() {
+    return false;
+  }
+
+  function currentBrand() {
+    return brands.find(brand => brand.name === state.brandName) || null;
+  }
+
+  function currentVehicle() {
+    const brand = vehicleCatalog.find(item => item.name === state.brandName);
+    return brand?.cars.find(car => car.name === state.carName) || null;
+  }
+
+  function isElectricVehicle() {
+    const carName = state.carName || "";
+    const importElectricNames = [
+      // BMW
+      "i4",
+      "i5",
+      "i7",
+      "iX1",
+      "iX2",
+      "iX3",
+      "IX",
+
+      // 벤츠
+      "EQA",
+      "EQB",
+      "EQE",
+      "EQS",
+      "마이바흐 EQS",
+
+      // 아우디
+      "Q4 e-tron",
+      "Q6 e-tron",
+      "e-tron",
+
+      // 볼보
+      "EX30",
+      "EX90",
+
+      // 테슬라
+      "모델3",
+      "모델Y",
+      "모델Y L",
+
+      // 폭스바겐
+      "ID.4",
+      "ID.5",
+
+      // 포르쉐 · 롤스로이스
+      "카이엔 EV",
+      "타이칸",
+      "스펙터"
+    ];
+
+    return importElectricNames.includes(carName);
+  }
+
+  function currentPaints() {
+    return currentVehicle()?.paints || [];
+  }
+
+  function currentPaint() {
+    return currentPaints().find(paint => paint.id === state.paintId) || null;
+  }
+
+function isTwoTonePaint(paint) {
+  return Boolean(paint?.hex2);
+}
+
+function paintSwatchStyle(paint) {
+  const border = paint?.border || "#cfd5dc";
+
+  if (paint?.hex2) {
+    return `background-color:${paint.hex};background-image:linear-gradient(90deg, ${paint.hex} 0%, ${paint.hex} 50%, ${paint.hex2} 50%, ${paint.hex2} 100%) !important;border-color:${border};`;
+  }
+
+  return `background:${paint.hex};border-color:${border};`;
+}
+
+  function currentCarImage() {
+    const paints = currentPaints();
+    const selectedPaint = currentPaint();
+    const imagePath = selectedPaint?.image || paints[0]?.image || fallbackImage;
+    return assetUrl(imagePath);
+  }
+
+  function getCarPreviewImage(brandName, carName) {
+    const brand = vehicleCatalog.find(item => item.name === brandName);
+    const car = brand?.cars.find(item => item.name === carName);
+    const imagePath = car?.listImage || car?.paints?.[0]?.image || fallbackImage;
+    return assetUrl(imagePath);
+  }
+
+  function ensureSelection() {
+    state.market = "import";
+
+    const list = currentBrands();
+
+    if (state.brandName && !list.some(brand => brand.name === state.brandName)) {
+      state.brandName = "";
+      state.carName = "";
+    }
+
+    const brand = currentBrand();
+
+    if (brand && state.carName && !brand.cars.includes(state.carName)) {
+      state.carName = "";
+      state.paintId = "";
+    }
+
+    if (state.paintId && !currentPaints().some(paint => paint.id === state.paintId)) {
+      state.paintId = "";
+    }
+  }
+
+  function selectedVehicleHtml() {
+    const brand = currentBrand();
+    const paint = currentPaint();
+
+    if (!brand || !state.carName) return "";
+
+    return `
+      <div class="selected-vehicle">
+        <img src="${currentCarImage()}" alt="${brand.name} ${state.carName}">
+        <div>
+          <small>선택 차량</small>
+          <strong>${brand.name} ${state.carName}</strong>
+          <span class="selected-vehicle-paint">${paint ? paint.name : "상담 후 결정"}</span>
+          ${state.trim || state.subTrim ? `<span class="selected-vehicle-trim">${state.trim}${state.subTrim ? ` · ${state.subTrim}` : ""}</span>` : ""}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderStepOne() {
+    ensureSelection();
+    const brand = currentBrand();
+    const paint = currentPaint();
+    const paints = currentPaints();
+    const useOwnBackground = Boolean(brand?.ownBackground && state.carName);
+    // 현재 월 기준 외장 색상 할인 안내 (최대 20%)
+    const discountMonth = getCurrentDiscountMonth();
+    const discountRate = 20;
+
+    const carTitleMarkup = `<div class="wizard-car-title ${useOwnBackground ? "wizard-car-title--overlay" : ""}">
+        <div>
+          <small>${brand ? brand.short : "SELECT VEHICLE"}</small>
+          <strong>${state.carName || "차량을 선택해 주세요"}</strong>
+        </div>
+      </div>`;
+
+    const carImageMarkup = state.carName
+      ? useOwnBackground
+        ? `${carTitleMarkup}
+          <div class="wizard-car-image wizard-car-image--full">
+            <img src="${currentCarImage()}" alt="${state.brandName} ${state.carName} ${paint ? paint.name : ""}">
+          </div>`
+        : `${carTitleMarkup}
+          <div class="wizard-car-image wizard-car-image--staged">
+            <div class="wizard-car-stage-bg" aria-hidden="true"></div>
+            <img src="${currentCarImage()}" alt="${state.brandName} ${state.carName} ${paint ? paint.name : ""}">
+          </div>`
+      : `${carTitleMarkup}
+        <div class="wizard-car-image">
+          <div class="vehicle-empty-visual">차량 선택 후 이미지가 표시됩니다.</div>
+        </div>`;
+
+    return `
+      <div class="wizard-step step-one">
+        <div class="step-heading">
+          <span>STEP 01</span>
+          <h2>원하는 수입차를 선택해 주세요.</h2>
+          <p>브랜드와 차량, 외장 색상을 순서대로 선택할 수 있습니다.</p>
+        </div>
+
+        <fieldset class="option-block" data-option-section="brand">
+          <legend><b>1</b> 브랜드 선택</legend>
+          <div class="wizard-brand-grid">
+            ${currentBrands().map(item => {
+              const brandLogoPath = getBrandLogoPath(item.name);
+
+              return `
+              <button class="${item.name === state.brandName ? "active" : ""}" type="button" data-brand="${item.name}">
+                ${brandLogoPath ? `
+                  <span class="brand-logo-box ${isLightBrandLogo(item.name) ? "is-light-logo" : ""}">
+                    <img src="${brandLogoPath}" alt="${item.name} 로고">
+                  </span>
+                  <span class="brand-label">${item.name}</span>
+                ` : `
+                  <small>${item.short}</small>
+                  <span class="brand-label">${item.name}</span>
+                `}
+              </button>
+            `;
+            }).join("")}
+          </div>
+        </fieldset>
+
+        ${!state.brandName ? `<div class="review-slot" data-review-slot></div>` : `
+        <fieldset class="option-block ${!state.brandName ? "sequential-hidden" : ""}" data-option-section="car">
+          <legend><b>2</b> 차량 선택</legend>
+          ${brand ? `
+            <div class="vehicle-card-list" id="carCardList">
+              ${brand.cars.map(car => `
+                <button class="vehicle-card-item ${car === state.carName ? "active" : ""}" type="button" data-car-card="${car}" data-brand="${state.brandName}" aria-pressed="${car === state.carName ? "true" : "false"}">
+                  <span class="vehicle-card-item__info">
+                    <span class="vehicle-card-item__name">${car}</span>
+                    ${renderVehicleDiscountBadges(state.brandName, car)}
+                  </span>
+                  <span class="vehicle-card-item__thumb">
+                    <img src="${getCarPreviewImage(state.brandName, car)}" alt="${state.brandName} ${car}">
+                  </span>
+                </button>
+              `).join("")}
+            </div>
+          ` : `<p class="empty-selection-guide">브랜드를 먼저 선택해 주세요.</p>`}
+        </fieldset>
+
+        <div class="wizard-car-card car-adjust ${!state.carName ? "is-empty sequential-hidden" : ""} ${brand?.ownBackground ? "has-own-background" : ""} ${state.brandName === "테슬라" ? "is-tesla" : ""} ${state.brandName === "제네시스" ? "is-genesis" : ""} ${state.brandName === "기아" ? "is-kia" : ""} ${state.brandName === "기아" && state.carName === "봉고3" ? "is-kia-bongo3" : ""}" data-brand="${state.brandName || ""}" data-car="${state.carName || ""}">
+          ${carImageMarkup}
+
+          <div class="paint-block ${!state.carName ? "is-disabled-block" : "has-monthly-discount"}" data-option-section="paint">
+            <div class="paint-label">
+              <span class="paint-label-title"><b>3</b> 외장 색상${state.carName ? `<em>${paints.length}개</em>` : ""}</span>
+              ${state.carName ? `<small class="paint-swipe-guide">좌우로 넘겨보세요</small>` : ""}
+            </div>
+            ${state.carName ? `
+              <div class="wizard-paints">
+                ${paints.map(item => `
+                  <button class="${item.id === state.paintId ? "active" : ""}" type="button"
+                    data-paint="${item.id}" aria-label="${item.name}" aria-pressed="${item.id === state.paintId ? "true" : "false"}">
+                    <i style="${paintSwatchStyle(item)}"></i>
+                  </button>
+                `).join("")}
+              </div>
+              <div class="chosen-paint">
+                <strong>${paint ? paint.name : "색상을 선택해 주세요"}</strong>
+              </div>
+              <div class="monthly-discount-sticker" role="note" aria-label="${discountMonth}월 할인율 최대 ${discountRate}%">
+                <img class="monthly-discount-sticker__megaphone" src="images/discount-megaphone.png?v=20261028-match-ref-02" alt="" aria-hidden="true" width="52" height="64">
+                <div class="monthly-discount-sticker__pill">
+                  <span class="monthly-discount-sticker__month">${discountMonth}월 할인율</span>
+                  <div class="monthly-discount-sticker__details">
+                    <span class="monthly-discount-sticker__max">최대</span>
+                    <strong class="monthly-discount-sticker__rate">${discountRate}%</strong>
+                  </div>
+                </div>
+              </div>
+            ` : `<p class="empty-selection-guide">차량을 먼저 선택해 주세요.</p>`}
+          </div>
+        </div>
+        `}
+
+        <p class="validation-message" id="validationMessage"></p>
+      </div>
+    `;
+  }
+
+  // 세부모델 자체가 최종 트림인 브랜드는 하위 트림을 선택하지 않습니다.
+  function hasNoSubTrim() {
+    return ["포르쉐", "벤틀리", "롤스로이스"].includes(normalizeTrimKey(state.brandName));
+  }
+
+  function renderStepTwo() {
+    const vehicle = currentVehicle();
+    const modelGroups = Array.isArray(vehicle?.detailModels) ? vehicle.detailModels : [];
+
+    return `
+      <div class="wizard-step step-two">
+        <div class="step-heading">
+          <span>STEP 02</span>
+          <h2>세부 모델을 선택해 주세요.</h2>
+          <p>${hasNoSubTrim() ? "원하는 세부모델을 선택해 주세요." : "원하는 엔진과 트림을 차례대로 선택해 주세요."}</p>
+        </div>
+
+        <fieldset class="option-block no-gap" data-option-section="engine-model">
+          <legend><b>1</b> 세부모델 선택</legend>
+
+          <div class="engine-model-list">
+            ${modelGroups.length ? modelGroups.map(group => {
+              const isActive = group.name === state.trim;
+
+              return `
+                <section class="engine-model-card ${isActive ? "active" : ""}">
+                  <button class="engine-model-main" type="button" data-engine-model="${group.name}" ${ENABLE_TRIM_DETAIL_POPUP && usesDirectModelTrimDetail() ? 'aria-haspopup="dialog" aria-controls="trimDetailModal"' : ''}>
+                    <strong>${group.name}</strong>
+                    <span class="radio-ui ${isActive ? "checked" : ""}" aria-hidden="true"></span>
+                  </button>
+
+                  ${isActive && !hasNoSubTrim() ? `
+                    <div class="sub-trim-list" data-option-section="sub-trim">
+                      ${group.trims.map(item => `
+                        <button class="sub-trim-item ${item === state.subTrim ? "active" : ""}" type="button" data-sub-trim="${item}" ${ENABLE_TRIM_DETAIL_POPUP ? 'aria-haspopup="dialog" aria-controls="trimDetailModal"' : ''} aria-pressed="${item === state.subTrim}">
+                          <span class="radio-ui ${item === state.subTrim ? "checked" : ""}" aria-hidden="true"></span>
+                          <strong>${item}</strong>
+                        </button>
+                      `).join("")}
+                    </div>
+                  ` : ""}
+                </section>
+              `;
+            }).join("") : `<p class="empty-selection-guide">이 차량의 세부모델이 아직 등록되지 않았습니다.</p>`}
+          </div>
+        </fieldset>
+
+        <p class="validation-message" id="validationMessage"></p>
+      </div>
+    `;
+  }
+
+  function renderStepThree() {
+    return `
+      <div class="wizard-step">
+        ${selectedVehicleHtml()}
+
+        <div class="step-heading">
+          <span>STEP 03</span>
+          <h2>이용조건을 선택해 주세요.</h2>
+        </div>
+
+        <fieldset class="option-block" data-option-section="usage">
+          <legend><b>1</b> 이용 방식 선택</legend>
+          <div class="segment-control three-column usage-row" data-group="usage">
+            ${["장기렌트", "리스", "상담 후 결정"].map(value => `
+              <button class="${state.usage === value ? "active" : ""}" type="button" data-value="${value}">${value}</button>
+            `).join("")}
+          </div>
+        </fieldset>
+
+        ${state.usage && state.usage !== "상담 후 결정" ? `
+          <fieldset class="option-block" data-option-section="initialCost">
+            <legend><b>2</b> 초기비용 선택</legend>
+            <div class="segment-control two-column" data-group="initialCost">
+              ${["초기비용 0원", "선수금", "보증금", "상담 후 결정"].map(value => `
+                <button class="${state.initialCost === value ? "active" : ""}" type="button" data-value="${value}">${value}</button>
+              `).join("")}
+            </div>
+          </fieldset>
+
+          ${state.initialCost && !["초기비용 0원", "상담 후 결정"].includes(state.initialCost) ? `
+            <fieldset class="option-block conditional-block" data-option-section="rate">
+              <legend>${state.initialCost} 비율</legend>
+              <div class="rate-grid" data-group="rate">
+                ${rateOptions.map(value => `
+                  <button class="${state.rate === value ? "active" : ""}" type="button" data-value="${value}">${value}</button>
+                `).join("")}
+              </div>
+            </fieldset>
+          ` : ""}
+
+          <fieldset class="option-block" data-option-section="mileage">
+            <legend><b>3</b> 연간 주행거리 선택</legend>
+            <div class="mileage-grid" data-group="mileage">
+              ${mileageOptions.map(value => `
+                <button class="${state.mileage === value ? "active" : ""}" type="button" data-value="${value}">${value}</button>
+              `).join("")}
+            </div>
+          </fieldset>
+        ` : ""}
+
+        <p class="validation-message" id="validationMessage"></p>
+      </div>
+    `;
+  }
+
+  function renderStepFour() {
+    return `
+      <div class="wizard-step">
+        <div class="step-heading">
+          <span>STEP 04</span>
+          <h2>견적 받아볼 정보를 입력해주세요.</h2>
+          <p>선택한 조건으로 견적서를 보내드립니다.</p>
+        </div>
+
+        <div class="estimate-summary">
+          <h3>선택한 견적 조건</h3>
+          <dl>
+            <div><dt>차량</dt><dd>${state.brandName && state.carName ? `${state.brandName} ${state.carName}` : "상담 후 결정"} · ${currentPaint()?.name || "상담 후 결정"}</dd></div>
+            <div><dt>세부모델</dt><dd>${state.trim || "상담 후 결정"}${state.subTrim ? ` · ${state.subTrim}` : ""}</dd></div>
+            <div><dt>이용조건</dt><dd>${state.usage || "상담 후 결정"} · ${state.initialCost || "상담 후 결정"}${!["초기비용 0원", "상담 후 결정"].includes(state.initialCost) && state.rate ? ` ${state.rate}` : ""}</dd></div>
+            <div><dt>주행거리</dt><dd>${state.mileage || "상담 후 결정"}</dd></div>
+            <div class="discount-rate"><dt>${currentMonth}월 할인율</dt><dd>최대 20%</dd></div>
+            <div class="delivery-event" role="group" aria-label="출고이벤트 혜택">
+              <dt class="delivery-event__ticket">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                  <rect x="3.5" y="9" width="17" height="12" rx="1.6"></rect>
+                  <path d="M2.5 9h19V6.5a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5V9Z"></path>
+                  <path d="M12 5v16M12 5C10 5 7.5 4.3 7.5 2.9a1.8 1.8 0 0 1 2-1.5C11.2 1.4 12 3.2 12 5ZM12 5c2 0 4.5-.7 4.5-2.1a1.8 1.8 0 0 0-2-1.5C12.8 1.4 12 3.2 12 5Z"></path>
+                </svg>
+                <span>출고이벤트</span>
+              </dt>
+              <dd class="delivery-event__benefits">블랙박스, 썬팅, 코일매트, 상품권 <strong>최대 100만원</strong> 증정</dd>
+            </div>
+            ${isElectricVehicle() ? `<div><dt>보조금 지역</dt><dd data-summary-subsidy-region>${state.subsidyRegion || "선택 전"}</dd></div>` : ""}
+          </dl>
+        </div>
+
+        ${isElectricVehicle() ? `
+          <fieldset class="option-block subsidy-region-block" data-option-section="subsidy-region">
+            <legend>지역별 보조금</legend>
+            <p class="option-helper">전기차 보조금 확인을 위해 차량 등록 예정 지역을 선택해 주세요.</p>
+            <small class="subsidy-notice">*실제 보조금은 차종·세부모델·지자체 예산에 따라 달라질 수 있습니다.</small>
+            <div class="wizard-select">
+              <select id="subsidyRegionSelect" aria-label="전기차 보조금 지역 선택">
+                <option value="" selected disabled hidden>등록 지역을 선택해 주세요</option>
+                ${subsidyRegions.map(region => `
+                  <option value="${region}" ${state.subsidyRegion === region ? "selected" : ""}>${region}</option>
+                `).join("")}
+              </select>
+            </div>
+          </fieldset>
+        ` : ""}
+
+        <div class="customer-fields">
+          <label>
+            성함
+            <input id="customerName" name="name" placeholder="성함을 입력해 주세요" autocomplete="name"
+              minlength="2" maxlength="30" aria-describedby="customerNameError" required>
+            <span class="field-error" id="customerNameError" aria-live="polite"></span>
+          </label>
+          <label>
+            연락처
+            <input id="customerPhone" name="phone" inputmode="numeric" placeholder="연락처를 입력해 주세요"
+              autocomplete="tel" maxlength="13" aria-describedby="customerPhoneError" required>
+            <span class="field-error" id="customerPhoneError" aria-live="polite"></span>
+          </label>
+
+          <fieldset class="contact-method-field">
+            <legend>견적 받아볼 방법</legend>
+            <div class="contact-method-options" role="radiogroup" aria-describedby="contactMethodError">
+              ${["전화", "문자", "카톡"].map(method => `
+                <label class="contact-method-option">
+                  <input type="radio" name="contactMethod" value="${method}" ${state.contactMethod === method ? "checked" : ""}>
+                  <span>${method}</span>
+                </label>
+              `).join("")}
+            </div>
+            <span class="field-error" id="contactMethodError" aria-live="polite"></span>
+          </fieldset>
+        </div>
+
+        <div class="wizard-privacy-row">
+          <label class="wizard-privacy">
+            <input id="privacyAgree" type="checkbox" required checked>
+            <span>개인정보 수집 및 이용에 동의합니다.</span>
+          </label>
+          <button type="button" class="privacy-open-button" id="privacyOpenButton" aria-haspopup="dialog" aria-controls="privacyModal">내용보기</button>
+        </div>
+        <p class="validation-message" id="validationMessage"></p>
+      </div>
+    `;
+  }
+
+  function renderBlockedComplete() {
+    return `
+      <div class="wizard-complete wizard-complete--blocked" role="status">
+        <div class="blocked-complete__icon" aria-hidden="true">!</div>
+        <h2>견적 신청이 제한되었습니다.</h2>
+        <p>현재 해당 접속 환경에서는 견적 신청을 진행하실 수 없습니다.</p>
+        <section class="blocked-complete__notice" aria-label="법적 조치 안내">
+          <strong>⚠ 법적 조치 안내</strong>
+          <p>반복적인 허위 견적 신청 및 서비스 이용 방해 행위가 지속될 경우<br class="blocked-complete__desktop-break"> 관련 법령에 따라 법적 조치가 취해질 수 있습니다.</p>
+        </section>
+        <p class="blocked-complete__support">정상적인 상담을 원하시는 경우 고객센터로 문의해 주세요.</p>
+        <button type="button" id="restartButton">홈으로 돌아가기</button>
+      </div>
+    `;
+  }
+
+  function renderComplete() {
+    const paint = currentPaint();
+    const pendingText = "상담 후 결정";
+    const brandText = state.brandName || pendingText;
+    const carText = state.carName || pendingText;
+    const colorText = paint?.name || pendingText;
+    const modelText = state.trim
+      ? `${state.trim}${state.subTrim ? ` · ${state.subTrim}` : ""}`
+      : pendingText;
+    const usageText = state.usage || pendingText;
+    const initialCostText = !state.initialCost
+      ? pendingText
+      : ["초기비용 0원", pendingText].includes(state.initialCost)
+        ? state.initialCost
+        : `${state.initialCost}${state.rate ? ` ${state.rate}` : ""}`;
+    const mileageText = state.mileage || pendingText;
+    const subsidyRegionText = isElectricVehicle()
+      ? (state.subsidyRegion || pendingText)
+      : "해당 없음";
+    const vehicleTitle = state.brandName && state.carName
+      ? `${state.brandName} ${state.carName}`
+      : pendingText;
+
+    return `
+      <div class="wizard-complete">
+        <span>✓</span>
+        <h2>견적 신청이 완료되었습니다.</h2>
+        <p>아래 신청 내용을 확인해 주세요.<br>전담 매니저가 확인 후 연락드릴 예정입니다.</p>
+
+        <section class="completion-summary" aria-label="견적 신청 내역">
+          <div class="completion-vehicle">
+            <img src="${currentCarImage()}" alt="${vehicleTitle}">
+            <div>
+              <small>선택 차량</small>
+              <strong>${vehicleTitle}</strong>
+              <span>${colorText}</span>
+            </div>
+          </div>
+
+          <div class="completion-section">
+            <h3>차량 및 이용조건</h3>
+            <dl class="completion-details">
+              <div><dt>브랜드</dt><dd>${brandText}</dd></div>
+              <div><dt>차량</dt><dd>${carText}</dd></div>
+              <div><dt>외장 색상</dt><dd>${colorText}</dd></div>
+              <div><dt>세부 모델</dt><dd>${modelText}</dd></div>
+              <div><dt>이용 방식</dt><dd>${usageText}</dd></div>
+              <div><dt>초기비용</dt><dd>${initialCostText}</dd></div>
+              <div><dt>주행거리</dt><dd>${mileageText}</dd></div>
+              <div class="discount-rate"><dt>${currentMonth}월 할인율</dt><dd>최대 20%</dd></div>
+              <div><dt>보조금 지역</dt><dd>${subsidyRegionText}</dd></div>
+            </dl>
+          </div>
+
+          <div class="completion-section">
+            <h3>신청자 정보</h3>
+            <dl class="completion-details">
+              <div><dt>성함</dt><dd>${state.customerName}</dd></div>
+              <div><dt>연락처</dt><dd>${state.customerPhone}</dd></div>
+              <div><dt>상담 방법</dt><dd>${state.contactMethod}</dd></div>
+            </dl>
+          </div>
+        </section>
+
+        <div class="wizard-spacer wizard-spacer--complete" aria-hidden="true"></div>
+        <button type="button" id="restartButton">확인</button>
+      </div>
+    `;
+  }
+
+  function arrowIcon() {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M14 7l5 5-5 5"></path></svg>`;
+  }
+
+  function checkIcon() {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"></path></svg>`;
+  }
+
+  function render(options = {}) {
+    const preserveScroll = options.preserveScroll === true;
+    const preservedScrollY = preserveScroll ? window.scrollY : 0;
+    const preservedContentHeight = preserveScroll ? content.offsetHeight : 0;
+
+    if (preserveScroll) {
+      // content.innerHTML 교체 순간 문서 높이가 잠시 줄면서
+      // 브라우저가 스크롤을 맨 위로 보정하는 현상을 막습니다.
+      content.style.minHeight = `${preservedContentHeight}px`;
+    }
+
+    ensureSelection();
+
+    if (state.submitted) {
+      indicator.hidden = true;
+      actions.hidden = true;
+      spacer.hidden = true;
+      content.innerHTML = state.blockedSubmission ? renderBlockedComplete() : renderComplete();
+      updateReviewPlacement();
+      bindCompleteEvents();
+      return;
+    }
+
+    indicator.hidden = false;
+    actions.hidden = false;
+    spacer.hidden = false;
+
+    const renderers = [renderStepOne, renderStepTwo, renderStepThree, renderStepFour];
+    content.innerHTML = renderers[state.step - 1]();
+    updateReviewPlacement();
+
+    [...indicator.children].forEach((item, index) => {
+      const tabStep = index + 1;
+      const button = item.querySelector("[data-step-tab]");
+
+      item.classList.toggle("active", tabStep === state.step);
+      item.classList.toggle("done", tabStep < state.step);
+
+      if (button) {
+        const canNavigate = tabStep <= state.maxReachedStep;
+        button.disabled = !canNavigate;
+        button.setAttribute("aria-current", tabStep === state.step ? "step" : "false");
+      }
+    });
+    indicator.className = `step-indicator progress-${state.step}`;
+
+    const shouldShowConsultButton = state.step === 1 || state.step === 2;
+
+    backButton.hidden = state.step === 1;
+    consultButton.hidden = !shouldShowConsultButton;
+    consultButton.textContent = "바로 견적신청";
+    actions.classList.toggle("has-consult-button", shouldShowConsultButton);
+    nextButton.innerHTML = state.step === 4
+      ? `견적신청 ${arrowIcon()}`
+      : `다음 단계 ${arrowIcon()}`;
+
+    bindStepEvents();
+
+    if (preserveScroll) {
+      // 새 DOM이 반영된 직후 기존 위치를 즉시 유지합니다.
+      // 이후 scrollToNextSelection()이 목표 영역까지 부드럽게 이동합니다.
+      window.scrollTo({
+        top: preservedScrollY,
+        left: 0,
+        behavior: "auto"
+      });
+
+      window.requestAnimationFrame(() => {
+        window.scrollTo({
+          top: preservedScrollY,
+          left: 0,
+          behavior: "auto"
+        });
+      });
+    }
+  }
+
+  function scrollToNextSelection(selector, block = "start", viewportTop = null) {
+    const prefersReducedMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)"
+    ).matches;
+
+    // 렌더 직후에는 레이아웃 높이가 한두 프레임 동안 변할 수 있으므로
+    // 목표 요소를 매번 다시 찾고 실제 좌표로 이동합니다.
+    const moveToTarget = () => {
+      const target = content.querySelector(selector) || document.querySelector(selector);
+      if (!target) return;
+
+      content.style.minHeight = "";
+
+      const header = document.querySelector(".wizard-header") || document.querySelector(".site-header");
+      const headerHeight = header ? header.getBoundingClientRect().height : 0;
+      const rect = target.getBoundingClientRect();
+      const targetTop = window.scrollY + rect.top;
+
+      const destination = viewportTop !== null
+        ? targetTop - Number(viewportTop)
+        : targetTop - headerHeight - 8;
+
+      window.scrollTo({
+        top: Math.max(0, destination),
+        left: 0,
+        behavior: prefersReducedMotion ? "auto" : "smooth"
+      });
+    };
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(moveToTarget);
+    });
+
+    // 모바일 브라우저의 늦은 레이아웃 보정까지 반영합니다.
+    window.setTimeout(moveToTarget, 120);
+  }
+
+  function enablePaintDragScroll(scroller) {
+    if (!scroller || scroller.dataset.dragReady === "true") return;
+
+    let isDragging = false;
+    let startX = 0;
+    let startScrollLeft = 0;
+    let moved = false;
+
+    const getPageX = event => {
+      if (typeof event.pageX === "number") return event.pageX;
+      if (event.touches && event.touches[0]) return event.touches[0].pageX;
+      if (event.changedTouches && event.changedTouches[0]) return event.changedTouches[0].pageX;
+      return 0;
+    };
+
+    const startDrag = event => {
+      isDragging = true;
+      moved = false;
+      startX = getPageX(event);
+      startScrollLeft = scroller.scrollLeft;
+      scroller.classList.add("is-dragging");
+      scroller.dataset.dragMoved = "false";
+    };
+
+    const moveDrag = event => {
+      if (!isDragging) return;
+      const currentX = getPageX(event);
+      const diff = currentX - startX;
+      if (Math.abs(diff) > 5) {
+        moved = true;
+        scroller.dataset.dragMoved = "true";
+      }
+      scroller.scrollLeft = startScrollLeft - diff;
+      if (event.cancelable) event.preventDefault();
+    };
+
+    const endDrag = () => {
+      if (!isDragging) return;
+      isDragging = false;
+      scroller.classList.remove("is-dragging");
+      window.setTimeout(() => {
+        scroller.dataset.dragMoved = "false";
+      }, 40);
+    };
+
+    scroller.addEventListener("mousedown", startDrag);
+    scroller.addEventListener("mousemove", moveDrag);
+    window.addEventListener("mouseup", endDrag);
+    scroller.addEventListener("mouseleave", endDrag);
+
+    // 터치 기기에서는 브라우저의 기본 가로 스와이프를 사용합니다.
+    // touchmove에서 preventDefault를 호출하면 일부 모바일 브라우저에서
+    // overflow-x 스크롤이 막힐 수 있으므로 별도 터치 드래그를 등록하지 않습니다.
+
+    scroller.addEventListener("click", event => {
+      if (scroller.dataset.dragMoved === "true") {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    }, true);
+
+    scroller.dataset.dragReady = "true";
+  }
+
+  function updatePaintOverflow(scroller) {
+    if (!scroller) return;
+
+    // 실제 기기에서 색상 버튼이 완전히 다 보이는지 확인합니다.
+    // 마지막 색상이 아주 조금이라도 잘리거나 경계에 애매하게 걸리면
+    // overflow로 판단해서 안내 문구와 스와이프를 활성화합니다.
+    scroller.classList.remove("has-paint-overflow");
+
+    window.requestAnimationFrame(() => {
+      const buttons = scroller.querySelectorAll("button");
+      const lastButton = buttons[buttons.length - 1];
+
+      const hasScrollOverflow = scroller.scrollWidth > scroller.clientWidth + 1;
+
+      let hasPartialClip = false;
+
+      if (lastButton) {
+        const scrollerRect = scroller.getBoundingClientRect();
+        const lastButtonRect = lastButton.getBoundingClientRect();
+
+        // 우측 여유 8px까지 확보되지 않으면 "애매하게 걸린 상태"로 판단합니다.
+        const safeRightEdge = scrollerRect.right - 8;
+
+        hasPartialClip = lastButtonRect.right > safeRightEdge;
+      }
+
+      const isOverflowing = hasScrollOverflow || hasPartialClip;
+
+      scroller.classList.toggle("has-paint-overflow", isOverflowing);
+
+      if (isOverflowing) {
+        enablePaintDragScroll(scroller);
+      }
+    });
+  }
+
+  function initScrollablePaints() {
+    content.querySelectorAll(".wizard-paints").forEach(updatePaintOverflow);
+  }
+
+  let paintResizeTimer = 0;
+
+  window.addEventListener("resize", () => {
+    window.clearTimeout(paintResizeTimer);
+    paintResizeTimer = window.setTimeout(() => {
+      initScrollablePaints();
+    }, 100);
+  });
+
+  function bindStepEvents() {
+    initScrollablePaints();
+
+    content.querySelectorAll("[data-group]").forEach(group => {
+      group.addEventListener("click", event => {
+        const button = event.target.closest("button[data-value]");
+        if (!button) return;
+
+        const key = group.dataset.group;
+        const value = button.dataset.value;
+
+        // 재렌더링으로 선택 버튼이 사라지기 전에 포커스를 해제해
+        // 브라우저가 이전 버튼 위치로 스크롤을 되돌리지 않게 합니다.
+        button.blur();
+
+        if (key === "market") {
+          const marketChanged = state.market !== value;
+          state.market = value;
+
+          if (marketChanged) {
+            state.brandName = "";
+            state.carName = "";
+            state.paintId = "";
+            resetSelectionsAfterVehicleChange();
+          }
+        } else {
+          state[key] = value;
+
+          if (key === "usage" && value === "상담 후 결정") {
+            // 상담 후 결정은 세부 이용조건을 받지 않으므로 기존 선택값을 비웁니다.
+            state.initialCost = "";
+            state.rate = "";
+            state.mileage = "";
+          }
+
+          if (key === "initialCost" && ["초기비용 0원", "상담 후 결정"].includes(value)) {
+            state.rate = "없음";
+          }
+          if (key === "initialCost" && !["초기비용 0원", "상담 후 결정"].includes(value) && state.rate === "없음") {
+            state.rate = "10%";
+          }
+        }
+        render({ preserveScroll: key === "market" });
+
+        if (key === "market") {
+          scrollToNextSelection('[data-option-section="brand"]', "start");
+        } else if (key === "usage") {
+          if (value !== "상담 후 결정") {
+            scrollToNextSelection('[data-option-section="initialCost"]');
+          }
+        } else if (key === "initialCost") {
+          scrollToNextSelection(
+            ["초기비용 0원", "상담 후 결정"].includes(value)
+              ? '[data-option-section="mileage"]'
+              : '[data-option-section="rate"]'
+          );
+        } else if (key === "rate") {
+          scrollToNextSelection('[data-option-section="mileage"]');
+        }
+      });
+    });
+
+    content.querySelectorAll(".wizard-brand-grid button[data-brand]").forEach(button => {
+      button.addEventListener("click", () => {
+        button.blur();
+        const nextBrandName = button.dataset.brand;
+        const brandChanged = state.brandName !== nextBrandName;
+        state.brandName = nextBrandName;
+
+        if (brandChanged) {
+          state.carName = "";
+          state.paintId = "";
+          resetSelectionsAfterVehicleChange();
+        }
+
+        render();
+        scrollToNextSelection('[data-option-section="car"]', "start");
+      });
+    });
+
+    content.querySelectorAll("[data-paint]").forEach(button => {
+      button.addEventListener("click", () => {
+        const nextPaintId = button.dataset.paint;
+        const nextPaint = currentPaints().find(item => item.id === nextPaintId);
+        if (!nextPaint || state.paintId === nextPaintId) return;
+
+        state.paintId = nextPaintId;
+
+        const paintButtons = content.querySelectorAll("[data-paint]");
+        paintButtons.forEach(item => {
+          const isActive = item.dataset.paint === nextPaintId;
+          item.classList.toggle("active", isActive);
+          item.setAttribute("aria-pressed", String(isActive));
+        });
+
+        const chosenPaintName = content.querySelector(".chosen-paint strong");
+        if (chosenPaintName) chosenPaintName.textContent = nextPaint.name;
+
+        const vehicleImage = content.querySelector(".wizard-car-image img");
+        if (!vehicleImage) return;
+
+        const nextImage = new Image();
+        nextImage.decoding = "async";
+        nextImage.onload = () => {
+          vehicleImage.src = assetUrl(nextPaint.image);
+          vehicleImage.alt = `${state.brandName} ${state.carName} ${nextPaint.name}`;
+        };
+        nextImage.src = assetUrl(nextPaint.image);
+      });
+    });
+
+    content.querySelectorAll("[data-car-card]").forEach(button => {
+      button.addEventListener("click", () => {
+        const nextCarName = button.dataset.carCard;
+        const carChanged = state.carName !== nextCarName;
+        state.carName = nextCarName;
+
+        if (carChanged) {
+          state.paintId = "";
+          resetSelectionsAfterVehicleChange();
+        }
+
+        render();
+
+        if (state.carName) {
+          scrollToNextSelection('.wizard-car-card', "start", 76);
+        }
+      });
+    });
+
+
+    content.querySelectorAll("[data-engine-model]").forEach(button => {
+      button.addEventListener("click", () => {
+        // 포르쉐·벤틀리·롤스로이스: 하위 트림 버튼 없이 세부모델을 눌렀을 때 안내 팝업을 엽니다.
+        if (usesDirectModelTrimDetail() && ENABLE_TRIM_DETAIL_POPUP) {
+          if (!trimDetailModal) {
+            console.error("[오토지니] 트림 팝업 HTML이 없습니다. index.html, css/style.css, js/script.js를 함께 업데이트하세요.");
+            showValidation("트림 안내 창을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
+            return;
+          }
+          openTrimDetailModal(button.dataset.engineModel, { directModel: true });
+          return;
+        }
+        state.trim = button.dataset.engineModel;
+        state.subTrim = "";
+        render();
+
+        // 2단계에서는 세부모델을 선택해도 다음 항목으로 내려가지 않고
+        // 항상 "1. 세부모델" 영역을 화면 상단 기준으로 유지합니다.
+        scrollToNextSelection('[data-option-section="engine-model"]', "start");
+      });
+    });
+
+    content.querySelectorAll("[data-sub-trim]").forEach(button => {
+      button.addEventListener("click", () => {
+        // 팝업 OFF이면 선택값을 즉시 확정하고 기존 단계 이동 방식은 유지합니다.
+        if (!ENABLE_TRIM_DETAIL_POPUP) {
+          const selected = button.dataset.subTrim;
+          const modelGroup = currentVehicle()?.detailModels?.find(group => group.name === state.trim);
+          if (!modelGroup?.trims.includes(selected)) return;
+          state.subTrim = selected;
+          render();
+          showValidation("");
+          rememberWizardState();
+          scrollToNextSelection('[data-option-section="sub-trim"]', "start");
+          return;
+        }
+        // 팝업 ON이면 설명을 확인한 뒤 선택을 확정합니다.
+        openTrimDetailModal(button.dataset.subTrim);
+      });
+    });
+
+    const subsidyRegionSelect = document.getElementById("subsidyRegionSelect");
+    subsidyRegionSelect?.addEventListener("change", () => {
+      state.subsidyRegion = subsidyRegionSelect.value;
+      const summaryValue = document.querySelector('[data-summary-subsidy-region]');
+      if (summaryValue) summaryValue.textContent = state.subsidyRegion;
+      showValidation("");
+    });
+
+    const nameInput = document.getElementById("customerName");
+    const phoneInput = document.getElementById("customerPhone");
+
+    if (nameInput) {
+      let isNameComposing = false;
+
+      const clearNameError = () => {
+        setFieldError(nameInput, document.getElementById("customerNameError"), "");
+        showValidation("");
+      };
+
+      const sanitizeCompletedName = input => {
+        input.value = input.value
+          .replace(/[^가-힣A-Za-z\s]/g, "")
+          .replace(/\s{2,}/g, " ")
+          .trim();
+      };
+
+      // 모바일 한글 키보드는 조합 도중 input/compositionend가 여러 번 발생할 수 있습니다.
+      // 입력 중에는 value를 절대 다시 쓰지 않고 오류 표시만 지웁니다.
+      nameInput.addEventListener("compositionstart", () => {
+        isNameComposing = true;
+      });
+
+      nameInput.addEventListener("compositionend", () => {
+        isNameComposing = false;
+        clearNameError();
+      });
+
+      nameInput.addEventListener("input", () => {
+        clearNameError();
+      });
+
+      // 글자 조합이 모두 끝나고 입력란을 벗어날 때만 값을 정리합니다.
+      nameInput.addEventListener("blur", event => {
+        if (isNameComposing) return;
+        sanitizeCompletedName(event.target);
+      });
+    }
+
+    if (phoneInput) {
+      phoneInput.addEventListener("input", event => {
+        formatPhone(event);
+        setFieldError(phoneInput, document.getElementById("customerPhoneError"), "");
+        showValidation("");
+      });
+    }
+
+    content.querySelectorAll('input[name="contactMethod"]').forEach(input => {
+      input.addEventListener("change", event => {
+        state.contactMethod = event.target.value;
+        setFieldError(event.target, document.getElementById("contactMethodError"), "");
+        showValidation("");
+      });
+    });
+
+  
+  const vehicleSearchModal = document.getElementById("vehicleSearchModal");
+  const openVehicleSearchButton = document.getElementById("openVehicleSearch");
+  const closeVehicleSearchButton = document.getElementById("closeVehicleSearch");
+  const globalVehicleSearch = document.getElementById("globalVehicleSearch");
+  const globalVehicleSearchClear = document.getElementById("globalVehicleSearchClear");
+  const globalVehicleSearchResult = document.getElementById("globalVehicleSearchResult");
+  const globalVehicleSearchList = document.getElementById("globalVehicleSearchList");
+
+  const allVehicleSearchItems = vehicleCatalog
+    .filter(brandItem => brandItem.market === "import")
+    .flatMap(brandItem =>
+      brandItem.cars.map(carItem => ({
+        market: "import",
+        brandName: brandItem.name,
+        brandShort: brandItem.short,
+        carName: carItem.name
+      }))
+    );
+
+  function resetGlobalVehicleSearch() {
+    if (!globalVehicleSearch || !globalVehicleSearchClear || !globalVehicleSearchResult || !globalVehicleSearchList) return;
+    globalVehicleSearch.value = "";
+    globalVehicleSearchClear.hidden = true;
+    globalVehicleSearchResult.textContent = "차량명을 입력해 주세요.";
+    globalVehicleSearchList.innerHTML = "";
+    globalVehicleSearchList.hidden = true;
+  }
+
+  function updateGlobalVehicleSearch() {
+    if (!globalVehicleSearch || !globalVehicleSearchClear || !globalVehicleSearchResult || !globalVehicleSearchList) return;
+    const keyword = globalVehicleSearch.value.trim().toLocaleLowerCase("ko-KR");
+    globalVehicleSearchClear.hidden = !globalVehicleSearch.value;
+
+    if (!keyword) {
+      globalVehicleSearchResult.textContent = "차량명을 입력해 주세요.";
+      globalVehicleSearchList.innerHTML = "";
+      globalVehicleSearchList.hidden = true;
+      return;
+    }
+
+    const results = allVehicleSearchItems.filter(item =>
+      `${item.brandName} ${item.brandShort} ${item.carName}`
+        .toLocaleLowerCase("ko-KR")
+        .includes(keyword)
+    );
+
+    globalVehicleSearchResult.textContent = results.length
+      ? `${results.length}대의 차량을 찾았습니다.`
+      : "일치하는 차량이 없습니다.";
+
+    globalVehicleSearchList.innerHTML = results.map(item => `
+      <button type="button" class="vehicle-search-item integrated-vehicle-search__item"
+        data-global-market="${item.market}"
+        data-global-brand="${item.brandName}"
+        data-global-car="${item.carName}">
+        <strong>${item.carName}</strong>
+        <span>${item.brandName}</span>
+      </button>
+    `).join("");
+    globalVehicleSearchList.hidden = results.length === 0;
+  }
+
+  openVehicleSearchButton?.addEventListener("click", () => {
+    resetGlobalVehicleSearch();
+    vehicleSearchModal?.showModal();
+    window.setTimeout(() => globalVehicleSearch?.focus(), 30);
+  });
+
+  closeVehicleSearchButton?.addEventListener("click", () => vehicleSearchModal?.close());
+  globalVehicleSearch?.addEventListener("input", updateGlobalVehicleSearch);
+  globalVehicleSearch?.addEventListener("search", updateGlobalVehicleSearch);
+  globalVehicleSearchClear?.addEventListener("click", () => {
+    resetGlobalVehicleSearch();
+    globalVehicleSearch?.focus();
+  });
+
+  globalVehicleSearchList?.addEventListener("click", event => {
+    const button = event.target.closest("[data-global-car]");
+    if (!button) return;
+
+    const nextMarket = "import";
+    const nextBrandName = button.dataset.globalBrand;
+    const nextCarName = button.dataset.globalCar;
+    const vehicleChanged =
+      state.market !== nextMarket ||
+      state.brandName !== nextBrandName ||
+      state.carName !== nextCarName;
+
+    const previousSnapshot = { ...state };
+    state.market = nextMarket;
+    state.brandName = nextBrandName;
+    state.carName = nextCarName;
+    state.paintId = "";
+    state.step = 1;
+
+    if (vehicleChanged) resetSelectionsAfterVehicleChange();
+    recordWizardNavigation(previousSnapshot);
+
+    vehicleSearchModal?.close();
+    render();
+    window.requestAnimationFrame(() => {
+      scrollToNextSelection('.wizard-car-card', "start", 76);
+    });
+  });
+
+  vehicleSearchModal?.addEventListener("click", event => {
+    if (event.target === vehicleSearchModal) vehicleSearchModal.close();
+  });
+
+  const privacyModal = document.getElementById("privacyModal");
+    const privacyOpenButton = document.getElementById("privacyOpenButton");
+
+    privacyOpenButton?.addEventListener("click", () => {
+      if (privacyModal?.showModal) privacyModal.showModal();
+    });
+  }
+
+  function resetWizardToStart() {
+    const previousSnapshot = { ...state };
+    // 이전 견적 전송 과정에서 잠긴 버튼 상태까지 완전히 초기화합니다.
+    nextButton.disabled = false;
+    nextButton.classList.remove("is-submitting");
+    nextButton.innerHTML = `다음 단계 ${arrowIcon()}`;
+    actions.hidden = false;
+    indicator.hidden = false;
+
+    state.step = 1;
+    state.maxReachedStep = 1;
+    state.market = "import";
+    state.brandName = "";
+    state.carName = "";
+    state.paintId = "";
+    state.trim = "";
+    state.subTrim = "";
+    state.usage = "";
+    state.initialCost = "";
+    state.rate = "";
+    state.mileage = "";
+    state.subsidyRegion = "";
+    state.customerName = "";
+    state.customerPhone = "";
+    state.contactMethod = "";
+    state.submitted = false;
+    state.blockedSubmission = false;
+    recordWizardNavigation(previousSnapshot);
+    render();
+
+    // 브랜드/차량 선택을 초기화했으므로 첫 화면용 후기 영역도 다시 표시합니다.
+    document.dispatchEvent(new CustomEvent("autogenie:wizard-reset"));
+
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function bindCompleteEvents() {
+    const restart = document.getElementById("restartButton");
+    restart?.addEventListener("click", resetWizardToStart);
+  }
+
+  function formatPhone(event) {
+    const digits = event.target.value.replace(/\D/g, "").slice(0, 11);
+
+    // 서울 지역번호(02)는 앞자리가 2자리이고, 그 외 번호는 앞자리가 3자리입니다.
+    if (digits.startsWith("02")) {
+      if (digits.length <= 2) {
+        event.target.value = digits;
+      } else if (digits.length <= 5) {
+        event.target.value = `${digits.slice(0, 2)}-${digits.slice(2)}`;
+      } else if (digits.length <= 9) {
+        event.target.value = `${digits.slice(0, 2)}-${digits.slice(2, 5)}-${digits.slice(5)}`;
+      } else {
+        event.target.value = `${digits.slice(0, 2)}-${digits.slice(2, 6)}-${digits.slice(6)}`;
+      }
+      return;
+    }
+
+    if (digits.length <= 3) {
+      event.target.value = digits;
+    } else if (digits.length <= 6) {
+      event.target.value = `${digits.slice(0, 3)}-${digits.slice(3)}`;
+    } else if (digits.length <= 10) {
+      event.target.value = `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+    } else {
+      event.target.value = `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`;
+    }
+  }
+
+  function showValidation(message) {
+    const validation = document.getElementById("validationMessage");
+    if (validation) validation.textContent = message;
+  }
+
+  function setFieldError(input, errorElement, message) {
+    if (!input || !errorElement) return;
+    input.classList.toggle("is-invalid", Boolean(message));
+    input.setAttribute("aria-invalid", message ? "true" : "false");
+    errorElement.textContent = message;
+  }
+
+  function clearCustomerErrors() {
+    const name = document.getElementById("customerName");
+    const phone = document.getElementById("customerPhone");
+    setFieldError(name, document.getElementById("customerNameError"), "");
+    setFieldError(phone, document.getElementById("customerPhoneError"), "");
+    showValidation("");
+  }
+
+  // 기존 차단 이름/번호 규칙에 걸리는 경우에만 별도 경고문을 표시합니다.
+  function isBlockedEstimateIdentity(nameValue, phoneValue) {
+    const normalizedName = (nameValue || "").trim().toLowerCase().replace(/\s/g, "");
+    const blockedNames = [
+      "테스트", "홍길동", "아무개", "관리자", "운영자", "담당자",
+      "test", "tester", "admin", "administrator", "asdf", "qwer", "abc"
+    ];
+    const digits = (phoneValue || "").replace(/\D/g, "");
+    const subscriberNumber = digits.slice(digits.startsWith("02") ? 2 : 3);
+    const blockedNumbers = ["1234567", "7654321", "12341234", "12345678", "87654321"];
+    const middleNumber = subscriberNumber.slice(0, -4);
+    const lastNumber = subscriberNumber.slice(-4);
+    const isRepeatedGroup = number => number.length >= 3 && /^(\d)\1+$/.test(number);
+    return blockedNames.includes(normalizedName)
+      || blockedNumbers.includes(subscriberNumber)
+      || (isRepeatedGroup(middleNumber) && isRepeatedGroup(lastNumber));
+  }
+
+  const estimateBlockModal = document.getElementById("estimateBlockModal");
+  document.querySelectorAll("[data-estimate-block-close]").forEach(button => {
+    button.addEventListener("click", () => estimateBlockModal?.close());
+  });
+  // 차단 여부는 Google 시트의 방문자 ID 목록을 기준으로 확인합니다.
+  // 과거 테스트용 localStorage 플래그는 더 이상 접속 경고 판정에 사용하지 않습니다.
+  const ESTIMATE_BLOCK_BROWSER_KEY = "autogenie_estimate_blocked_browser_v1";
+  function rememberEstimateBlockedBrowser() {
+    // 구글 시트에 등록된 ID만 접속 경고 대상으로 삼습니다.
+  }
+  function showEstimateBlockedWarning() {
+    if (estimateBlockModal?.open) return;
+    if (estimateBlockModal?.showModal) estimateBlockModal.showModal();
+    else alert("견적 신청이 제한되었습니다. 동일한 허위 신청이 지속될 경우 법적 조치가 취해질 수 있습니다.");
+  }
+
+  // Apps Script 웹 앱은 외부 도메인 호출 시 CORS 제한이 있을 수 있어 JSONP를 사용합니다.
+  // 콜백은 구글 시트 내용이 아닌 {success, blocked}만 받습니다.
+  // 요청 전 실제 차단목록을 조회합니다. null은 네트워크/조회 오류를 뜻합니다.
+  // 공개 응답에서는 차단목록 전체가 아니라 차단 여부만 전달됩니다.
+  function requestIpBlockStatus(ipAddress) {
+    return new Promise(resolve => {
+      if (!GOOGLE_APPS_SCRIPT_URL || GOOGLE_APPS_SCRIPT_URL.includes("여기에_") ||
+          !ipAddress || ipAddress === "조회 실패") {
+        resolve(null);
+        return;
+      }
+      const callbackName = "agBlockCheck" + Math.random().toString(36).slice(2);
+      const script = document.createElement("script");
+      const url = new URL(GOOGLE_APPS_SCRIPT_URL);
+      url.searchParams.set("action", "check_visitor_block");
+      url.searchParams.set("ipAddress", ipAddress);
+      url.searchParams.set("callback", callbackName);
+      url.searchParams.set("_", String(Date.now()));
+      let settled = false;
+      let timeoutId;
+      const finish = value => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        script.remove();
+        delete window[callbackName];
+        resolve(value);
+      };
+      window[callbackName] = result => {
+        finish(result && result.success === true && typeof result.blocked === "boolean"
+          ? result.blocked : null);
+      };
+      script.onerror = () => finish(null);
+      timeoutId = setTimeout(() => finish(null), 12000);
+      script.src = url.toString();
+      document.head.appendChild(script);
+    });
+  }
+
+  async function checkVisitorBlockOnEntry() {
+    const ipAddress = await getPublicIpAddress();
+    if (await requestIpBlockStatus(ipAddress) === true) {
+      showEstimateBlockedWarning();
+    }
+  }
+  checkVisitorBlockOnEntry();
+
+  function isValidCustomerName(value) {
+    const name = value.trim().replace(/\s+/g, " ");
+    const normalizedName = name.toLowerCase().replace(/\s/g, "");
+    const koreanName = /^[가-힣]{2,10}$/;
+    const englishName = /^[A-Za-z]{2,20}(?: [A-Za-z]{2,20}){0,3}$/;
+
+    // 대표적인 테스트·장난 입력과 동일 문자 반복을 차단합니다.
+    const blockedNames = [
+      "테스트", "홍길동", "아무개", "관리자", "운영자", "담당자",
+      "test", "tester", "admin", "administrator", "asdf", "qwer", "abc"
+    ];
+    const isRepeatedCharacter = /^(.)\1+$/.test(normalizedName);
+    const isBlockedName = blockedNames.includes(normalizedName);
+
+    return (koreanName.test(name) || englishName.test(name))
+      && !isRepeatedCharacter
+      && !isBlockedName;
+  }
+
+  function isValidContactPhone(value) {
+    const digits = value.replace(/\D/g, "");
+
+    // 휴대전화 010, 인터넷전화 070, 서울 02, 기타 국내 지역번호를 허용합니다.
+    const isMobile = /^010\d{8}$/.test(digits);
+    const isInternetPhone = /^070\d{8}$/.test(digits);
+    const isSeoulLandline = /^02\d{7,8}$/.test(digits);
+    const isRegionalLandline = /^0(?:3[1-3]|4[1-4]|5[1-5]|6[1-4])\d{7,8}$/.test(digits);
+
+    if (!(isMobile || isInternetPhone || isSeoulLandline || isRegionalLandline)) {
+      return false;
+    }
+
+    const prefixLength = digits.startsWith("02") ? 2 : 3;
+    const subscriberNumber = digits.slice(prefixLength);
+    const lastNumber = subscriberNumber.slice(-4);
+    const middleNumber = subscriberNumber.slice(0, -4);
+
+    // 010-1111-3846 또는 010-3846-1111처럼 한쪽 번호만 반복되는 경우는 허용합니다.
+    // 010-1111-2222처럼 가운데와 끝 번호가 모두 단일 숫자 반복인 경우만 차단합니다.
+    const isRepeatedGroup = number => number.length >= 3 && /^(\d)\1+$/.test(number);
+    const hasRepeatedBothGroups = isRepeatedGroup(middleNumber) && isRepeatedGroup(lastNumber);
+
+    // 대표적인 순차형 테스트 번호는 차단합니다.
+    const blockedNumbers = [
+      "1234567", "7654321", "12341234", "12345678", "87654321"
+    ];
+
+    return !hasRepeatedBothGroups && !blockedNumbers.includes(subscriberNumber);
+  }
+
+  function moveToConsultStep() {
+    // 1·2단계에서 바로 견적 신청을 선택하면 정보입력 단계로 이동합니다.
+    // 선택하지 않은 항목은 STEP 04 요약에서 "상담 후 결정"으로 표시합니다.
+    const previousSnapshot = { ...state };
+    state.step = 4;
+    state.maxReachedStep = Math.max(state.maxReachedStep, 4);
+    recordWizardNavigation(previousSnapshot);
+    render();
+    scrollToEstimate();
+  }
+
+  function validateCurrentStep() {
+    if (state.step === 1) {
+      if (!state.brandName) {
+        showValidation("브랜드를 선택해 주세요.");
+        return false;
+      }
+      if (!state.carName) {
+        showValidation("차량을 선택해 주세요.");
+        return false;
+      }
+      if (!state.paintId) {
+        showValidation("외장 색상을 선택해 주세요.");
+        return false;
+      }
+      return true;
+    }
+
+    if (state.step === 2) {
+      if (!state.trim) {
+        showValidation("세부 모델을 선택해 주세요.");
+        return false;
+      }
+      if (!hasNoSubTrim() && !state.subTrim) {
+        showValidation("트림을 선택해 주세요.");
+        return false;
+      }
+      return true;
+    }
+
+    if (state.step === 3) {
+      if (!state.usage) {
+        showValidation("이용 방식을 선택해 주세요.");
+        return false;
+      }
+
+      // 상담 후 결정은 추가 조건 선택 없이 바로 다음 단계로 이동할 수 있습니다.
+      if (state.usage === "상담 후 결정") {
+        return true;
+      }
+
+      if (!state.initialCost) {
+        showValidation("초기비용 조건을 선택해 주세요.");
+        return false;
+      }
+      if (!["초기비용 0원", "상담 후 결정"].includes(state.initialCost) && !state.rate) {
+        showValidation(`${state.initialCost} 비율을 선택해 주세요.`);
+        return false;
+      }
+      if (!state.mileage) {
+        showValidation("연간 주행거리를 선택해 주세요.");
+        return false;
+      }
+      return true;
+    }
+
+    if (state.step === 4) {
+      const name = document.getElementById("customerName");
+      const phone = document.getElementById("customerPhone");
+      const contactMethod = document.querySelector('input[name="contactMethod"]:checked');
+      const privacy = document.getElementById("privacyAgree");
+      const nameError = document.getElementById("customerNameError");
+      const phoneError = document.getElementById("customerPhoneError");
+      const contactMethodError = document.getElementById("contactMethodError");
+
+      clearCustomerErrors();
+
+      if (isElectricVehicle() && !state.subsidyRegion) {
+        showValidation("전기차 보조금 확인 지역을 선택해 주세요.");
+        document.getElementById("subsidyRegionSelect")?.focus();
+        return false;
+      }
+
+      if (isBlockedEstimateIdentity(name.value, phone.value)) {
+        rememberEstimateBlockedBrowser();
+        showEstimateBlockedWarning();
+        return false;
+      }
+
+      if (!isValidCustomerName(name.value)) {
+        const message = "올바른 성함을 입력해 주세요.";
+        setFieldError(name, nameError, message);
+        name.focus();
+        return false;
+      }
+
+      if (!isValidContactPhone(phone.value)) {
+        const message = "올바른 연락처를 입력해 주세요.";
+        setFieldError(phone, phoneError, message);
+        phone.focus();
+        return false;
+      }
+
+      if (!contactMethod) {
+        const message = "상담 방법을 선택해 주세요.";
+        setFieldError(document.querySelector('input[name="contactMethod"]'), contactMethodError, message);
+        document.querySelector('input[name="contactMethod"]')?.focus();
+        return false;
+      }
+
+      if (!privacy.checked) {
+        showValidation("개인정보 수집 및 이용 동의가 필요합니다.");
+        privacy.focus();
+        return false;
+      }
+
+      state.customerName = name.value.trim().replace(/\s+/g, " ");
+      state.customerPhone = phone.value;
+      state.contactMethod = contactMethod.value;
+    }
+
+    return true;
+  }
+
+  function scrollToEstimate() {
+    document.getElementById("estimate").scrollIntoView({
+      behavior: "smooth",
+      block: "start"
+    });
+  }
+
+  function buildEstimatePayload() {
+    const paint = currentPaint();
+    const pendingText = "상담 후 결정";
+
+    // 제출 직전에 화면의 지역 선택값을 한 번 더 읽어
+    // state와 실제 select 값이 어긋나는 상황을 방지합니다.
+    const subsidyRegionSelect = document.getElementById("subsidyRegionSelect");
+    if (subsidyRegionSelect && subsidyRegionSelect.value) {
+      state.subsidyRegion = subsidyRegionSelect.value;
+    }
+
+    return {
+      submittedAt: new Date().toLocaleString("ko-KR"),
+      vehicleType: "수입차",
+      brand: state.brandName || pendingText,
+      vehicle: state.carName || pendingText,
+      exteriorColor: paint?.name || pendingText,
+      model: state.trim || pendingText,
+      trim: hasNoSubTrim() ? (state.trim || pendingText) : getTrimTextForMail(state.subTrim || pendingText),
+      usageType: state.usage || pendingText,
+      initialCostType: state.initialCost || pendingText,
+      initialCostRate: !state.initialCost || ["초기비용 0원", pendingText].includes(state.initialCost)
+        ? "해당 없음"
+        : (state.rate || pendingText),
+      annualMileage: state.mileage || pendingText,
+
+      // Apps Script의 data.subsidyRegion과 동일한 필드명으로 전송합니다.
+      subsidyRegion: isElectricVehicle()
+        ? (state.subsidyRegion || pendingText)
+        : "해당 없음",
+
+      customerName: state.customerName,
+      customerPhone: state.customerPhone,
+      contactMethod: state.contactMethod
+    };
+  }
+
+  async function submitEstimateToGoogle() {
+    if (!GOOGLE_APPS_SCRIPT_URL || GOOGLE_APPS_SCRIPT_URL.includes("여기에_")) {
+      throw new Error("Apps Script 웹앱 URL이 설정되지 않았습니다.");
+    }
+
+    const payload = buildEstimatePayload();
+    const securityData = getAutojiniSecurityData();
+    const estimateIpAddress = await getPublicIpAddress();
+
+    // Apps Script의 e.parameter에서 각 값을 안정적으로 읽을 수 있도록
+    // application/x-www-form-urlencoded 형식으로 명시적으로 구성합니다.
+    const body = new URLSearchParams({
+      submittedAt: payload.submittedAt || "",
+      vehicleType: payload.vehicleType || "",
+      brand: payload.brand || "",
+      vehicle: payload.vehicle || "",
+      exteriorColor: payload.exteriorColor || "",
+      model: payload.model || "",
+      trim: payload.trim || "",
+      usageType: payload.usageType || "",
+      initialCostType: payload.initialCostType || "",
+      initialCostRate: payload.initialCostRate || "",
+      annualMileage: payload.annualMileage || "",
+      subsidyRegion: payload.subsidyRegion || "",
+      // 수입차 사이트 접속 도메인별 신청출처 구분
+      // 오토지니(importcar) / 구글 광고(icar) / 네이버 배너(nicar)
+      submissionSource: ({
+        "icar.agautoplan.com": "google",
+        "nicar.agautoplan.com": "naver_banner"
+      })[window.location.hostname.toLowerCase()] || "autojini",
+      customerName: payload.customerName || "",
+      customerPhone: payload.customerPhone || "",
+      contactMethod: payload.contactMethod || "",
+
+      // 방문로그와 같은 방문자 ID로 고객이름을 연결합니다.
+      visitorId: securityData.visitorId || "확인 불가",
+      ipAddress: estimateIpAddress,
+      visitSessionId: getOrCreateAutojiniVisitSessionId(),
+      elapsedSeconds: String(securityData.elapsedSeconds || 0),
+      ...window.AutoGenieTraffic?.getFields()
+    });
+
+    await fetch(GOOGLE_APPS_SCRIPT_URL, {
+      method: "POST",
+      mode: "no-cors",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+      },
+      body: body.toString()
+    });
+  }
+
+
+  const privacyModal = document.getElementById("privacyModal");
+
+  document.querySelectorAll("[data-privacy-close]").forEach(button => {
+    button.addEventListener("click", () => privacyModal?.close());
+  });
+
+  privacyModal?.addEventListener("click", event => {
+    const rect = privacyModal.getBoundingClientRect();
+    const clickedOutside =
+      event.clientX < rect.left ||
+      event.clientX > rect.right ||
+      event.clientY < rect.top ||
+      event.clientY > rect.bottom;
+
+    if (clickedOutside) privacyModal.close();
+  });
+
+
+  indicator.addEventListener("click", event => {
+    const button = event.target.closest("[data-step-tab]");
+    if (!button || button.disabled) return;
+
+    const targetStep = Number(button.dataset.stepTab);
+    if (!Number.isInteger(targetStep)) return;
+    if (targetStep > state.maxReachedStep) return;
+
+    const previousSnapshot = { ...state };
+    state.step = targetStep;
+    recordWizardNavigation(previousSnapshot);
+    render();
+    scrollToEstimate();
+  });
+
+  backButton.addEventListener("click", () => {
+    if (state.step <= 1) return;
+
+    // 브라우저 방문 기록은 직전 '견적 단계'를 보장하지 않습니다.
+    // 특히 STEP 01·02의 [바로 견적신청]으로 STEP 04에 진입한 경우,
+    // history.back()은 STEP 01·02로 건너뛰므로 항상 한 단계만 이동합니다.
+    // 차량·트림·이용조건 등 기존 선택값은 그대로 유지합니다.
+    const previousSnapshot = { ...state };
+    state.step -= 1;
+    recordWizardNavigation(previousSnapshot);
+    render();
+    scrollToEstimate();
+  });
+
+  consultButton?.addEventListener("click", () => {
+    moveToConsultStep();
+  });
+
+  nextButton.addEventListener("click", async () => {
+    if (!validateCurrentStep()) return;
+
+    if (state.step < 4) {
+      const previousSnapshot = { ...state };
+      state.step += 1;
+      state.maxReachedStep = Math.max(state.maxReachedStep, state.step);
+      recordWizardNavigation(previousSnapshot);
+      render();
+      scrollToEstimate();
+      return;
+    }
+
+    const originalText = nextButton.innerHTML;
+    nextButton.disabled = true;
+    nextButton.classList.add("is-submitting");
+    nextButton.textContent = "견적 전송 중...";
+
+    try {
+      // no-cors POST는 서버 응답을 읽을 수 없으므로 보내기 전에 차단 여부를 별도로 확인합니다.
+      const applicationIp = await getPublicIpAddress();
+      const blockedStatus = await requestIpBlockStatus(applicationIp);
+      if (blockedStatus === null) {
+        throw new Error("차단 상태를 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.");
+      }
+      if (blockedStatus === true) {
+        state.blockedSubmission = true;
+        state.submitted = true;
+        render();
+        scrollToEstimate();
+        return;
+      }
+      await submitEstimateToGoogle();
+      window.AutoGenieTraffic?.trackConversion();
+      state.submitted = true;
+      render();
+      scrollToEstimate();
+    } catch (error) {
+      console.error(error);
+      showValidation(error?.message?.includes("차단 상태")
+        ? error.message : "견적 전송에 실패했습니다. 잠시 후 다시 시도해 주세요.");
+      nextButton.disabled = false;
+      nextButton.classList.remove("is-submitting");
+      nextButton.innerHTML = originalText;
+    }
+  });
+
+  form.addEventListener("submit", event => event.preventDefault());
+
+  const homeLogo = document.querySelector(".brand-mark");
+  homeLogo?.addEventListener("click", event => {
+    event.preventDefault();
+
+    // 단순 새로고침만 하면 history.state에 기록된 이전 견적 단계가 복원됩니다.
+    // 저장된 현재 단계를 STEP 01의 완전한 초기 상태로 먼저 교체합니다.
+    Object.keys(state).forEach(key => { delete state[key]; });
+    Object.assign(state, initialWizardState);
+    wizardHistoryIndex = 0;
+
+    // 차량 직접 링크는 해제하되, 광고 유입 분석에 필요한 다른 파라미터는 유지합니다.
+    const homeUrl = new URL(window.location.href);
+    homeUrl.searchParams.delete("car");
+    homeUrl.searchParams.delete("brand");
+    homeUrl.hash = "";
+
+    window.history.replaceState(wizardHistoryEntry(0), "", homeUrl.href);
+    // 동일 주소라도 로딩 화면부터 다시 시작하도록 새로고침을 명시합니다.
+    window.location.reload();
+  });
+
+  // 차량별 광고 링크: ?car=모델명 또는 ?brand=브랜드명&car=모델명
+  // 외장 색상은 자동 선택하지 않고 고객이 직접 고르도록 유지합니다.
+  function initializeVehicleFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const requestedCar = params.get("car")?.trim();
+    if (!requestedCar) return false;
+
+    const normalizeLinkName = value => String(value || "")
+      .normalize("NFKC")
+      .toLocaleLowerCase("ko-KR")
+      .replace(/[\s\-_·.]/g, "");
+
+    const requestedBrand = normalizeLinkName(params.get("brand"));
+    const targetCar = normalizeLinkName(requestedCar);
+    const candidates = vehicleCatalog
+      .filter(brand => brand.market === "import")
+      .filter(brand => !requestedBrand || normalizeLinkName(brand.name) === requestedBrand)
+      .flatMap(brand => brand.cars
+        .filter(car => normalizeLinkName(car.name) === targetCar)
+        .map(car => ({ brand, car })));
+
+    if (!candidates.length) return false;
+    // 같은 모델명이 여러 브랜드에 있으면 브랜드를 명시하는 주소를 권장합니다.
+    const { brand, car } = candidates[0];
+    state.step = 1;
+    state.market = "import";
+    state.brandName = brand.name;
+    state.carName = car.name;
+    state.paintId = "";
+    resetSelectionsAfterVehicleChange();
+
+    // 최초 진입은 브라우저 뒤로가기에 빈 견적 단계를 추가하지 않습니다.
+    // 뒤로가기로 견적 상태가 복원된 경우에는 해당 상태를 우선합니다.
+    window.history.replaceState(wizardHistoryEntry(wizardHistoryIndex), "", window.location.href);
+    return true;
+  }
+
+  const vehicleLinkSelected = initializeVehicleFromUrl();
+  render();
+
+  // 일반 차량 클릭과 같은 위치로 초기 화면을 구성합니다.
+  function scrollDeepLinkedVehicleToCard() {
+    if (!state.carName || state.step !== 1) return;
+    const target = content.querySelector(".wizard-car-card");
+    if (!target) return;
+    const oldHtmlBehavior = document.documentElement.style.scrollBehavior;
+    const oldBodyBehavior = document.body.style.scrollBehavior;
+    document.documentElement.style.scrollBehavior = "auto";
+    document.body.style.scrollBehavior = "auto";
+    const destination = window.scrollY + target.getBoundingClientRect().top - 76;
+    window.scrollTo({ top: Math.max(0, destination), left: 0, behavior: "instant" });
+    document.documentElement.style.scrollBehavior = oldHtmlBehavior;
+    document.body.style.scrollBehavior = oldBodyBehavior;
+  }
+
+  deepLinkedVehicleReady = vehicleLinkSelected;
+  if (vehicleLinkSelected && !landingLoader) {
+    window.requestAnimationFrame(scrollDeepLinkedVehicleToCard);
+  }
+})();
