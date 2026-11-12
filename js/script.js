@@ -7049,65 +7049,68 @@ const vehicleCatalog = [
     return "기타";
   }
 
+  // IP 조회는 방문 저장과 병렬로 실행합니다. 여러 기능의 IP 조회는 한 번의 요청을 공유합니다.
+  let autojiniIpLookupInFlight = null;
+  let autojiniCachedIp = "";
+  function autojiniIsValidIp(value) {
+    const ip = String(value || "").trim();
+    if (/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) {
+      return ip.split(".").every(part => Number(part) >= 0 && Number(part) <= 255);
+    }
+    return ip.includes(":") && /^[0-9a-f:.]+$/i.test(ip) && ip.length <= 45;
+  }
+
   async function getPublicIpAddress() {
-    const ipServices = [
-      {
-        url: "https://api.ipify.org?format=json",
-        getIp: data => data.ip
-      },
-      {
-        url: "https://api64.ipify.org?format=json",
-        getIp: data => data.ip
-      },
-      {
-        url: "https://icanhazip.com/",
-        getIp: data => data
-      }
+    if (autojiniCachedIp) return autojiniCachedIp;
+    if (autojiniIpLookupInFlight) return autojiniIpLookupInFlight;
+
+    const services = [
+      { url: "https://api.ipify.org?format=json", text: false },
+      { url: "https://api64.ipify.org?format=json", text: false },
+      { url: "https://icanhazip.com/", text: true }
     ];
 
-    for (const service of ipServices) {
-      const controller = new AbortController();
-      const timeoutId = window.setTimeout(() => {
-        controller.abort();
-      }, 3500);
-
-      try {
-        const response = await fetch(service.url, {
-          method: "GET",
-          cache: "no-store",
-          signal: controller.signal
-        });
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
+    autojiniIpLookupInFlight = new Promise(resolve => {
+      let settled = false;
+      let pending = services.length;
+      const controllers = [];
+      services.forEach(async (service, index) => {
+        // 기본 제공업체가 빨리 응답하면 다른 외부 업체에는 접속하지 않습니다.
+        if (index > 0) await new Promise(next => window.setTimeout(next, index === 1 ? 350 : 850));
+        if (settled) {
+          pending -= 1;
+          return;
         }
-
-        let responseData;
-
-        if (service.url.includes("icanhazip.com")) {
-          responseData = await response.text();
-        } else {
-          responseData = await response.json();
+        const controller = new AbortController();
+        controllers.push(controller);
+        const timeout = window.setTimeout(() => controller.abort(), 4500);
+        try {
+          const response = await fetch(service.url, {
+            method: "GET", cache: "no-store", signal: controller.signal
+          });
+          if (!response.ok) throw new Error("IP service HTTP " + response.status);
+          const raw = service.text ? await response.text() : (await response.json()).ip;
+          const ip = String(raw || "").trim();
+          if (!settled && autojiniIsValidIp(ip)) {
+            settled = true;
+            autojiniCachedIp = ip;
+            resolve(ip);
+            controllers.forEach(other => { if (other !== controller) other.abort(); });
+          }
+        } catch (_) {
+          // 한 제공업체의 네트워크/CORS 오류는 다른 제공업체의 성공에 영향 없음.
+        } finally {
+          window.clearTimeout(timeout);
+          pending -= 1;
+          if (!settled && pending === 0) {
+            settled = true;
+            resolve("조회 실패");
+          }
         }
-
-        const ipAddress = String(
-          service.getIp(responseData) || ""
-        ).trim();
-
-        if (ipAddress) {
-          return ipAddress;
-        }
-      } catch (error) {
-        console.warn(
-          `IP 조회 실패: ${service.url}`,
-          error
-        );
-      } finally {
-        window.clearTimeout(timeoutId);
-      }
-    }
-
-    return "조회 실패";
+      });
+    });
+    try { return await autojiniIpLookupInFlight; }
+    finally { autojiniIpLookupInFlight = null; }
   }
 
   function postAutojiniVisitData(data, preferBeacon = false) {
@@ -7161,7 +7164,7 @@ const vehicleCatalog = [
 
   // no-cors POST는 요청 완료와 엑셀 저장 성공을 구분할 수 없습니다.
   // 서버에서 방문자ID/방문세션ID가 실제로 존재하는지만 JSONP로 확인합니다.
-  function confirmAutojiniVisitSaved(visitorId, visitSessionId) {
+  function confirmAutojiniVisitSaved(visitorId, visitSessionId, requireIp = false) {
     return new Promise(resolve => {
       const callback = `autoImportVisitCheck_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
       const script = document.createElement("script");
@@ -7180,7 +7183,7 @@ const vehicleCatalog = [
         try { delete window[callback]; } catch (_) { window[callback] = undefined; }
         resolve(saved);
       };
-      window[callback] = result => finish(Boolean(result && result.success && result.saved));
+      window[callback] = result => finish(Boolean(result && result.success && result.saved && (!requireIp || result.ipSaved === true)));
       script.onerror = () => finish(false);
       timer = window.setTimeout(() => finish(false), 5000);
       script.src = url.toString();
@@ -7191,8 +7194,73 @@ const vehicleCatalog = [
   let autojiniPendingVisitPayload = null;
   let autojiniTrackingRetryCount = 0;
 
+  // 접속 즉시 IP 조회를 시작합니다. 방문로그 저장 확인이 늦어져도 IP 조회는 진행됩니다.
+  let autojiniVisitIpLookupStarted = false;
+  let autojiniVisitResolvedIp = "";
+  let autojiniVisitIpConfirmed = false;
+  let autojiniVisitIpSyncTask = null;
+
+  function startAutojiniVisitIpLookup() {
+    if (autojiniVisitIpLookupStarted) return;
+    autojiniVisitIpLookupStarted = true;
+    autojiniVisitSessionId = autojiniVisitSessionId || getOrCreateAutojiniVisitSessionId();
+    const attemptLookup = remainingRetries => {
+      getPublicIpAddress().then(ip => {
+        if (autojiniIsValidIp(ip)) {
+          autojiniVisitResolvedIp = ip;
+          void syncAutojiniVisitIp(); // 방문 기록 확인과 무관하게 먼저 후속 업데이트 시도
+        } else if (remainingRetries > 0 && document.visibilityState !== "hidden") {
+          window.setTimeout(() => attemptLookup(remainingRetries - 1), 5000);
+        }
+      }).catch(() => {
+        if (remainingRetries > 0 && document.visibilityState !== "hidden") {
+          window.setTimeout(() => attemptLookup(remainingRetries - 1), 5000);
+        }
+      });
+    };
+    attemptLookup(1);
+  }
+
+  function syncAutojiniVisitIp() {
+    if (!autojiniIsValidIp(autojiniVisitResolvedIp) || autojiniVisitIpConfirmed) {
+      return Promise.resolve(autojiniVisitIpConfirmed);
+    }
+    if (autojiniVisitIpSyncTask) return autojiniVisitIpSyncTask;
+    const sessionId = autojiniVisitSessionId || getOrCreateAutojiniVisitSessionId();
+    const visitorId = getAutojiniVisitorId();
+    const ip = autojiniVisitResolvedIp;
+    autojiniVisitIpSyncTask = (async () => {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        await postAutojiniVisitData({
+          requestType: "page_visit_update", visitSessionId: sessionId,
+          visitorId, activeSeconds: getAutojiniVisitActiveSeconds(), ipAddress: ip
+        });
+        await new Promise(resolve => window.setTimeout(resolve, 450 + 550 * attempt));
+        if (await confirmAutojiniVisitSaved(visitorId, sessionId, true)) {
+          autojiniVisitIpConfirmed = true;
+          return true;
+        }
+      }
+      return false;
+    })();
+    return autojiniVisitIpSyncTask.finally(() => { autojiniVisitIpSyncTask = null; });
+  }
+
+  function flushAutojiniVisitIpOnHide() {
+    if (!autojiniVisitIpConfirmed && autojiniIsValidIp(autojiniVisitResolvedIp)) {
+      void postAutojiniVisitData({
+        requestType: "page_visit_update",
+        visitSessionId: autojiniVisitSessionId || getOrCreateAutojiniVisitSessionId(),
+        visitorId: getAutojiniVisitorId(),
+        activeSeconds: getAutojiniVisitActiveSeconds(),
+        ipAddress: autojiniVisitResolvedIp
+      }, true);
+    }
+  }
+
   async function sendVisitLog() {
     autojiniVisitSessionId = getOrCreateAutojiniVisitSessionId();
+    startAutojiniVisitIpLookup();
     const visitorId = getAutojiniVisitorId();
     let priorSaved = false;
     try { priorSaved = sessionStorage.getItem(AUTOJINI_VISIT_LOGGED_KEY) === "true"; } catch (_) {}
@@ -7205,7 +7273,7 @@ const vehicleCatalog = [
       visitedAt: new Date().toISOString(),
       customerName: "",
       // 외부 IP 조회를 기다리지 않고 먼저 방문을 기록합니다.
-      ipAddress: "조회 실패",
+      ipAddress: autojiniVisitResolvedIp || "IP 확인 중",
       referrerDomain: getReferrerDomain(referrer),
       referrerUrl: referrer || "직접 접속",
       visitorId,
@@ -7224,18 +7292,8 @@ const vehicleCatalog = [
       if (confirmed) {
         autojiniPendingVisitPayload = null;
         try { sessionStorage.setItem(AUTOJINI_VISIT_LOGGED_KEY, "true"); } catch (_) {}
-        // 최초 저장 성공 후 IP를 비동기로 보완; IP조회 실패가 방문 기록을 막지 않습니다.
-        getPublicIpAddress().then(ip => {
-          if (ip && ip !== "조회 실패") {
-            postAutojiniVisitData({
-              requestType: "page_visit_update",
-              visitSessionId: autojiniVisitSessionId,
-              visitorId,
-              activeSeconds: getAutojiniVisitActiveSeconds(),
-              ipAddress: ip
-            });
-          }
-        }).catch(() => {});
+        // IP 조회는 저장 확인과 병렬로 시작했으며 이후 반영도 별도로 확인합니다.
+        if (autojiniVisitResolvedIp) void syncAutojiniVisitIp();
         return true;
       }
       if (attempt < 2) await new Promise(resolve => window.setTimeout(resolve, (attempt + 1) * 1200));
@@ -7320,6 +7378,7 @@ const vehicleCatalog = [
 
   function handleAutojiniVisibilityChange() {
     if (document.visibilityState === "hidden") {
+      flushAutojiniVisitIpOnHide();
       pauseAutojiniVisitTime();
       sendAutojiniVisitDuration(true);
       return;
@@ -7329,6 +7388,7 @@ const vehicleCatalog = [
   }
 
   function handleAutojiniPageHide() {
+    flushAutojiniVisitIpOnHide();
     pauseAutojiniVisitTime();
     // 첫 저장확인 전에 이탈하더라도 마지막으로 전송을 시도합니다.
     // 서버의 세션ID 중복 방지로 이미 저장된 행은 중복 생성되지 않습니다.
