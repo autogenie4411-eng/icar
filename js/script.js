@@ -8968,7 +8968,9 @@ function paintSwatchStyle(paint) {
     consultButton.hidden = !shouldShowConsultButton;
     consultButton.textContent = "바로 견적신청";
     actions.classList.toggle("has-consult-button", shouldShowConsultButton);
-    nextButton.innerHTML = `${["세부모델 선택", "이용조건 선택", "정보 입력", "견적신청"][state.step - 1]} ${arrowIcon()}`;
+    nextButton.innerHTML = state.step === 4
+      ? `견적신청 ${arrowIcon()}`
+      : `다음 단계 ${arrowIcon()}`;
 
     bindStepEvents();
 
@@ -9500,7 +9502,7 @@ function paintSwatchStyle(paint) {
     // 이전 견적 전송 과정에서 잠긴 버튼 상태까지 완전히 초기화합니다.
     nextButton.disabled = false;
     nextButton.classList.remove("is-submitting");
-    nextButton.innerHTML = `세부모델 선택 ${arrowIcon()}`;
+    nextButton.innerHTML = `다음 단계 ${arrowIcon()}`;
     actions.hidden = false;
     indicator.hidden = false;
 
