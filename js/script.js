@@ -9718,14 +9718,21 @@ function paintSwatchStyle(paint) {
   }
 
   function moveToConsultStep() {
+    if (state.step === 4 || state.submitted) {
+      scrollToEstimate();
+      return;
+    }
+
     // 1·2단계에서 바로 견적 신청을 선택하면 정보입력 단계로 이동합니다.
     // 선택하지 않은 항목은 STEP 04 요약에서 "상담 후 결정"으로 표시합니다.
+    document.activeElement?.blur();
     const previousSnapshot = { ...state };
     state.step = 4;
     state.maxReachedStep = Math.max(state.maxReachedStep, 4);
     recordWizardNavigation(previousSnapshot);
     render();
-    scrollToEstimate();
+    // 버튼이 숨겨진 뒤 브라우저의 포커스·레이아웃 보정이 끝난 위치로 이동합니다.
+    window.requestAnimationFrame(scrollToEstimate);
   }
 
   function validateCurrentStep() {
@@ -9986,17 +9993,8 @@ function paintSwatchStyle(paint) {
     scrollToEstimate();
   });
 
-  consultButton?.addEventListener("click", () => {
-    moveToConsultStep();
-  });
-
-  document.getElementById("mobileEstimateButton")?.addEventListener("click", () => {
-    if (state.step === 4 || state.submitted) {
-      scrollToEstimate();
-      return;
-    }
-    moveToConsultStep();
-  });
+  consultButton?.addEventListener("click", moveToConsultStep);
+  document.getElementById("mobileEstimateButton")?.addEventListener("click", moveToConsultStep);
 
   nextButton.addEventListener("click", async () => {
     if (!validateCurrentStep()) return;
